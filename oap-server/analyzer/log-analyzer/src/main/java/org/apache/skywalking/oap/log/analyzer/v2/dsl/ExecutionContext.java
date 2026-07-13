@@ -57,6 +57,7 @@ public class ExecutionContext {
     public static final String KEY_DRY_RUN = "dry_run";
     public static final String KEY_AUTO_LAYER = "auto_layer";
     public static final String KEY_OUTPUT = "output";
+    public static final String KEY_DROP_REASON = "drop_reason";
 
     private final Map<String, Object> properties = new HashMap<>();
 
@@ -112,6 +113,7 @@ public class ExecutionContext {
         setProperty(KEY_METRICS_CONTAINER, null);
         setProperty(KEY_DRY_RUN, false);
         setProperty(KEY_OUTPUT, null);
+        setProperty(KEY_DROP_REASON, null);
         return this;
     }
 
@@ -125,6 +127,16 @@ public class ExecutionContext {
      */
     public Object input() {
         return getProperty(KEY_INPUT);
+    }
+
+    /**
+     * Replace the raw input for this rule's context. Used by parsers that normalize the
+     * body (e.g. {@code json {}} rewriting a text body to a JSON body): the original input
+     * object is shared by every rule analyzing the same log, so normalization must swap in
+     * a rule-local copy instead of mutating the shared object.
+     */
+    public void input(final Object input) {
+        setProperty(KEY_INPUT, input);
     }
 
     public ExecutionContext parsed(final Matcher parsed) {
@@ -162,6 +174,23 @@ public class ExecutionContext {
 
     public boolean shouldAbort() {
         return (boolean) getProperty(KEY_ABORT);
+    }
+
+    /**
+     * Record a human-readable reason the pipeline is dropping the log at the current step
+     * (e.g. a parse-failure message). Read by the DSL-debug recorder to populate
+     * {@code Sample.reason} so a live-debug watcher sees WHY a log was dropped, not just
+     * that it was. Set on the drop path only — alongside {@link #abort()}; a log that
+     * continues is not dropped and records no reason, so a later {@code abort {}} statement
+     * never inherits a stale reason from an earlier continued step.
+     */
+    public ExecutionContext dropReason(final String reason) {
+        setProperty(KEY_DROP_REASON, reason);
+        return this;
+    }
+
+    public String dropReason() {
+        return (String) getProperty(KEY_DROP_REASON);
     }
 
     public ExecutionContext metricsContainer(final List<SampleFamily> container) {

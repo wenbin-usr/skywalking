@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# /inspect/entities for a metric that is not in ValueColumnMetadata — 400
-# error JSON shape (curl -s strips status but the body is the ErrorResponse).
-error: 'unknown metric: nonexistent_metric_xyz'
+# /inspect/entities for a metric that is not in ValueColumnMetadata and carries no
+# valueColumn/valueType — 400. The handler returns "metric unknown locally: <name> —
+# provide valueColumn and valueType …"; the query reconstructs the {error: …} prefix.
+error: 'metric unknown locally: nonexistent_metric_xyz'

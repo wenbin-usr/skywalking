@@ -30,6 +30,7 @@ import org.apache.skywalking.oap.server.core.query.type.HeatMap;
 import org.apache.skywalking.oap.server.core.query.type.KVInt;
 import org.apache.skywalking.oap.server.core.query.type.KeyValue;
 import org.apache.skywalking.oap.server.core.query.type.MetricsValues;
+import org.apache.skywalking.oap.server.core.storage.annotation.InspectQueryContext;
 import org.apache.skywalking.oap.server.core.storage.annotation.ValueColumnMetadata;
 import org.apache.skywalking.oap.server.core.storage.query.IMetricsQueryDAO;
 import org.apache.skywalking.oap.server.library.client.jdbc.hikaricp.JDBCClient;
@@ -59,11 +60,9 @@ public class JDBCMetricsQueryDAO extends JDBCSQLExecutor implements IMetricsQuer
         // Label is null, because in readMetricsValues, no label parameter.
         final var intValues = metricsValues.getValues();
 
+        final var foreign = InspectQueryContext.get(condition.getName()) != null;
         final var tables = tableHelper.getTablesForRead(
-            condition.getName(),
-            duration.getStartTimeBucket(),
-            duration.getEndTimeBucket()
-        );
+            condition.getName(), duration.getStartTimeBucket(), duration.getEndTimeBucket());
 
         final var pointOfTimes = duration.assembleDurationPoints();
         final var entityId = condition.getEntity().buildId();
@@ -82,18 +81,26 @@ public class JDBCMetricsQueryDAO extends JDBCSQLExecutor implements IMetricsQuer
                        .collect(Collectors.joining(", ", "(", ")"))
                 );
 
-            jdbcClient.executeQuery(
-                sql.toString(),
-                resultSet -> {
-                    while (resultSet.next()) {
-                        final var kv = new KVInt();
-                        kv.setId(resultSet.getString("id"));
-                        kv.setValue(resultSet.getLong(valueColumnName));
-                        intValues.addKVInt(kv);
-                    }
-                    return null;
-                },
-                ids.toArray(new Object[0]));
+            try {
+                jdbcClient.executeQuery(
+                    sql.toString(),
+                    resultSet -> {
+                        while (resultSet.next()) {
+                            final var kv = new KVInt();
+                            kv.setId(resultSet.getString("id"));
+                            kv.setValue(resultSet.getLong(valueColumnName));
+                            intValues.addKVInt(kv);
+                        }
+                        return null;
+                    },
+                    ids.toArray(new Object[0]));
+            } catch (Exception e) {
+                if (!foreign) {
+                    throw e;
+                }
+                // Foreign probe spans every metric function table; this one does not carry the
+                // caller's value column. The metric-prefixed ids match only its real table, so skip.
+            }
         }
 
         metricsValues.setValues(
@@ -109,11 +116,9 @@ public class JDBCMetricsQueryDAO extends JDBCSQLExecutor implements IMetricsQuer
                                                         final List<KeyValue> labels,
                                                         final Duration duration) {
         final var idMap = new HashMap<String, DataTable>();
+        final var foreign = InspectQueryContext.get(condition.getName()) != null;
         final var tables = tableHelper.getTablesForRead(
-            condition.getName(),
-            duration.getStartTimeBucket(),
-            duration.getEndTimeBucket()
-        );
+            condition.getName(), duration.getStartTimeBucket(), duration.getEndTimeBucket());
 
         final var pointOfTimes = duration.assembleDurationPoints();
         final var entityId = condition.getEntity().buildId();
@@ -131,20 +136,28 @@ public class JDBCMetricsQueryDAO extends JDBCSQLExecutor implements IMetricsQuer
                        .collect(Collectors.joining(", ", "(", ")"))
                 );
 
-            jdbcClient.executeQuery(
-                sql.toString(),
-                resultSet -> {
-                    while (resultSet.next()) {
-                        String id = resultSet.getString("id");
+            try {
+                jdbcClient.executeQuery(
+                    sql.toString(),
+                    resultSet -> {
+                        while (resultSet.next()) {
+                            String id = resultSet.getString("id");
 
-                        DataTable multipleValues = new DataTable(5);
-                        multipleValues.toObject(resultSet.getString(valueColumnName));
+                            DataTable multipleValues = new DataTable(5);
+                            multipleValues.toObject(resultSet.getString(valueColumnName));
 
-                        idMap.put(id, multipleValues);
-                    }
-                    return null;
-                },
-                ids.toArray(new Object[0]));
+                            idMap.put(id, multipleValues);
+                        }
+                        return null;
+                    },
+                    ids.toArray(new Object[0]));
+            } catch (Exception e) {
+                if (!foreign) {
+                    throw e;
+                }
+                // Foreign probe spans every metric function table; this one does not carry the
+                // caller's value column. The metric-prefixed ids match only its real table, so skip.
+            }
         }
         return Util.sortValues(
             Util.composeLabelValue(condition.getName(), labels, ids, idMap),
@@ -203,13 +216,27 @@ public class JDBCMetricsQueryDAO extends JDBCSQLExecutor implements IMetricsQuer
     @SneakyThrows
     public List<String> listEntityIdsInRange(final String metricName,
                                              final String valueColumnName,
+                                             final String valueType,
                                              final Duration duration,
                                              final int limit) {
-        final var tables = tableHelper.getTablesForRead(
-            metricName,
-            duration.getStartTimeBucket(),
-            duration.getEndTimeBucket()
-        );
+        // valueType != null signals a foreign metric (not defined on this OAP). Its physical table
+        // is per-function, derivable only from the absent model, so probe the node's known metric
+        // function tables; the table_name = ? discriminator below keeps only this metric's rows. A
+        // locally-defined metric resolves straight to its own table set.
+        final List<String> tables;
+        if (valueType != null) {
+            tables = new ArrayList<>();
+            for (final var rawTable : TableHelper.getMetricRawTables()) {
+                tables.addAll(tableHelper.getExistingDayTables(
+                    rawTable, duration.getStartTimeBucket(), duration.getEndTimeBucket()));
+            }
+        } else {
+            tables = tableHelper.getTablesForRead(
+                metricName,
+                duration.getStartTimeBucket(),
+                duration.getEndTimeBucket()
+            );
+        }
         // For each entity_id, track the latest time_bucket seen across every day-partitioned
         // table the range touches. Per-table query shape is GROUP BY entity_id with MAX(time_bucket)
         // and ORDER BY that max — portable across H2 / MySQL / PostgreSQL (Postgres rejects

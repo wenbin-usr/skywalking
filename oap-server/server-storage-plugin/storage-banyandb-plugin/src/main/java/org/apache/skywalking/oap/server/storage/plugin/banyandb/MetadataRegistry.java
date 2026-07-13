@@ -62,6 +62,8 @@ import org.apache.skywalking.oap.server.core.query.type.KeyValue;
 import org.apache.skywalking.oap.server.core.storage.StorageException;
 import org.apache.skywalking.oap.server.core.storage.annotation.BanyanDB;
 import org.apache.skywalking.oap.server.core.storage.annotation.Column;
+import org.apache.skywalking.oap.server.core.storage.annotation.ForeignMetricMeta;
+import org.apache.skywalking.oap.server.core.storage.annotation.InspectQueryContext;
 import org.apache.skywalking.oap.server.core.storage.annotation.ValueColumnMetadata;
 import org.apache.skywalking.oap.server.core.storage.model.Model;
 import org.apache.skywalking.oap.server.core.storage.model.ModelColumn;
@@ -82,6 +84,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -94,7 +97,51 @@ import static org.apache.skywalking.oap.server.core.analysis.metrics.Metrics.ID;
 public enum MetadataRegistry {
     INSTANCE;
 
-    private final Map<String, Schema> registry = new HashMap<>();
+    // ConcurrentHashMap (not HashMap): boot populates single-threaded, but the self-heal path
+    // (repopulateLocally) writes from persistence/query threads concurrently with reads.
+    private final Map<String, Schema> registry = new ConcurrentHashMap<>();
+
+    /**
+     * Re-derive and locally register a model's BanyanDB {@link Schema} with NO server RPC.
+     * Registered once by the active {@code BanyanDBIndexInstaller} at boot and invoked by
+     * {@link #repopulateLocally(Model)} when a read path finds the cache empty for a model whose
+     * dispatch worker is already live — e.g. a {@code withoutSchemaChange} peer apply or a
+     * runtime-rule bundled fall-over rebuilt the worker but skipped the local populate. The
+     * {@code Model} is always known locally and its schema is a pure local derivation, so such a
+     * miss is always re-derivable without touching the backend.
+     */
+    @FunctionalInterface
+    public interface LocalSchemaPopulator {
+        void populateLocally(Model model);
+    }
+
+    private volatile LocalSchemaPopulator localSchemaPopulator;
+
+    /** Register the boot-time, RPC-free local schema populator. Called once by the active installer. */
+    public void registerLocalSchemaPopulator(final LocalSchemaPopulator populator) {
+        this.localSchemaPopulator = populator;
+    }
+
+    /**
+     * Best-effort, RPC-free re-derivation of a model's local {@link Schema} so a read/persist path
+     * can self-heal a missing cache entry instead of throwing {@code "<model> is not registered"}
+     * forever (the registry never evicts, so an entry that was never populated on this node stays
+     * absent otherwise). No-op when no populator is registered (e.g. non-BanyanDB unit tests).
+     * Swallows derivation exceptions so a self-heal attempt is never worse than the pre-existing
+     * throw — the caller re-reads and surfaces its own not-registered error if still absent.
+     */
+    public void repopulateLocally(final Model model) {
+        final LocalSchemaPopulator populator = this.localSchemaPopulator;
+        if (populator == null) {
+            return;
+        }
+        try {
+            populator.populateLocally(model);
+        } catch (final Exception e) {
+            log.debug("local schema self-heal re-derivation failed for model [{}]; "
+                + "caller will surface the not-registered error", model.getName(), e);
+        }
+    }
 
     public StreamModel registerStreamModel(Model model, BanyanDBStorageConfig config) {
         final SchemaMetadata schemaMetadata = parseMetadata(model, config, null);
@@ -377,7 +424,93 @@ public enum MetadataRegistry {
      * Find metadata with down-sampling
      */
     public Schema findMetricMetadata(final String modelName, DownSampling downSampling) {
-        return this.registry.get(SchemaMetadata.formatName(modelName, downSampling));
+        final Schema schema = this.registry.get(SchemaMetadata.formatName(modelName, downSampling));
+        if (schema != null) {
+            return schema;
+        }
+        // Provide-if-absent: a locally-registered metric always wins (above). Only when this OAP has no
+        // schema for the metric AND the inspect overlay is active on THIS THREAD do we synthesize a
+        // read-only foreign schema. The overlay is a ThreadLocal set only on the admin inspect request
+        // thread (never a write thread), so writes — even those that reach here via findMetadata() —
+        // never observe it.
+        final ForeignMetricMeta foreign = InspectQueryContext.get(modelName);
+        if (foreign != null) {
+            return synthesizeForeignMetricSchema(
+                modelName, stepFromDownSampling(downSampling), foreign.getValueColumn(), foreign.getValueType());
+        }
+        return null;
+    }
+
+    /**
+     * Inverse of {@link #deriveFromStep(Step)}: map a {@link DownSampling} back to the {@link Step}
+     * that {@link #synthesizeForeignMetricSchema} expects.
+     *
+     * @param downSampling the down-sampling to map back
+     * @return the corresponding query step
+     */
+    private Step stepFromDownSampling(DownSampling downSampling) {
+        switch (downSampling) {
+            case Day:
+                return Step.DAY;
+            case Hour:
+                return Step.HOUR;
+            case Second:
+                return Step.SECOND;
+            default:
+                return Step.MINUTE;
+        }
+    }
+
+    /**
+     * Synthesize a read-only measure {@link Schema} for a metric this OAP does not define locally
+     * (persisted by another OAP). No storage schema read is performed: the measure name / group /
+     * entity_id tag are derived from the deterministic metric → measure mapping, and the value field
+     * from the caller-supplied {@code valueColumn} / {@code valueType}. The node-global namespace is
+     * borrowed from any registered measure (the node always has its own metrics). BanyanDB validates
+     * the projection server-side, so a wrong value column surfaces as a query error.
+     *
+     * @return the synthesized schema, or {@code null} if this node has no registered measure to
+     *         borrow the namespace from (foreign-metric inspect is then unavailable here).
+     */
+    public Schema synthesizeForeignMetricSchema(final String metricName,
+                                                final Step step,
+                                                final String valueColumn,
+                                                final String valueType) {
+        final DownSampling downSampling = deriveFromStep(step);
+        final String rawGroup;
+        switch (downSampling) {
+            case Minute:
+                rawGroup = BanyanDB.MeasureGroup.METRICS_MINUTE.getName();
+                break;
+            case Hour:
+                rawGroup = BanyanDB.MeasureGroup.METRICS_HOUR.getName();
+                break;
+            case Day:
+                rawGroup = BanyanDB.MeasureGroup.METRICS_DAY.getName();
+                break;
+            default:
+                throw new IllegalArgumentException(
+                    "foreign-metric inspect supports step MINUTE / HOUR / DAY only, got " + step);
+        }
+        // namespace is node-global; borrow it from any registered measure. convertGroupName treats a
+        // null/empty namespace as "no prefix".
+        String namespace = null;
+        for (final Schema registered : this.registry.values()) {
+            if (registered.getMetadata().getKind() == Kind.MEASURE) {
+                namespace = registered.getMetadata().getNamespace();
+                break;
+            }
+        }
+        final SchemaMetadata metadata = new SchemaMetadata(
+            namespace, rawGroup, metricName, Kind.MEASURE, downSampling, null);
+        final Class<?> fieldClass = "DOUBLE".equalsIgnoreCase(valueType) ? double.class : long.class;
+        return Schema.builder()
+                     .metadata(metadata)
+                     .tag(Metrics.ENTITY_ID, metadata.indexFamily())
+                     .field(valueColumn)
+                     .spec(Metrics.ENTITY_ID, new ColumnSpec(ColumnType.TAG, String.class))
+                     .spec(valueColumn, new ColumnSpec(ColumnType.FIELD, fieldClass))
+                     .build();
     }
 
     public Schema findRecordMetadata(final String modelName) {
@@ -396,6 +529,24 @@ public enum MetadataRegistry {
             return findRecordMetadata(model.getName());
         }
         return findMetricMetadata(model.getName(), model.getDownsampling());
+    }
+
+    /**
+     * Drop the local {@link Schema} cache entry for {@code model}, keyed exactly as
+     * {@link #findMetadata(Model)} looks it up. The registry is otherwise insert-only, so this
+     * is the one path that removes an entry — invoked from {@code ModelInstaller.whenRemoving}
+     * on a runtime-rule hot-remove / reshape so a stale translation never outlives the model.
+     */
+    public void evict(final Model model) {
+        final String key;
+        if (!model.isTimeSeries() || model.isRecord()) {
+            key = model.getName();
+        } else {
+            key = SchemaMetadata.formatName(model.getName(), model.getDownsampling());
+        }
+        if (registry.remove(key) != null) {
+            log.debug("evicted local BanyanDB schema cache entry [{}]", key);
+        }
     }
 
     private FieldSpec parseFieldSpec(ModelColumn modelColumn) {
@@ -721,7 +872,7 @@ public enum MetadataRegistry {
                             model.getName(),
                             Kind.STREAM,
                             model.getDownsampling(),
-                            config.getRecordsBrowserErrorLog()
+                            config.getRecordsNormal()
                         );
                     default:
                         throw new IllegalStateException("unknown stream group " + streamGroup);

@@ -19,9 +19,11 @@
 package org.apache.skywalking.oap.server.storage.plugin.banyandb;
 
 import io.grpc.Status;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -40,7 +42,6 @@ import org.apache.skywalking.banyandb.database.v1.BanyandbDatabase.IndexRule;
 import org.apache.skywalking.banyandb.database.v1.BanyandbDatabase.IndexRuleBinding;
 import org.apache.skywalking.banyandb.schema.v1.BanyandbSchema.SchemaKey;
 import org.apache.skywalking.banyandb.database.v1.BanyandbDatabase.TopNAggregation;
-import java.time.Duration;
 import org.apache.skywalking.library.banyandb.v1.client.BanyanDBClient;
 import org.apache.skywalking.library.banyandb.v1.client.SchemaWatcher;
 import org.apache.skywalking.library.banyandb.v1.client.grpc.exception.BanyanDBException;
@@ -103,6 +104,51 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
     public BanyanDBIndexInstaller(Client client, ModuleManager moduleManager, BanyanDBStorageConfig config) {
         super(client, moduleManager);
         this.config = config;
+        // Let read/persist paths self-heal a missing local schema entry (MetadataRegistry.repopulateLocally):
+        // re-derive the model's Schema locally with zero server RPC via the same primitive the peer
+        // boot path uses. This closes the "<metric> is not registered" flood that arises when a
+        // withoutSchemaChange peer apply or a runtime-rule bundled fall-over rebuilds the dispatch
+        // worker but skips the populate. DownSamplingConfigService is resolved lazily per call — a
+        // self-heal only fires post-boot, when CoreModule is long up.
+        MetadataRegistry.INSTANCE.registerLocalSchemaPopulator(model -> {
+            final DownSamplingConfigService downSamplingConfigService = moduleManager.find(CoreModule.NAME)
+                                                                                     .provider()
+                                                                                     .getService(DownSamplingConfigService.class);
+            registerLocallyByKind(model, downSamplingConfigService);
+        });
+    }
+
+    @Override
+    protected boolean isRetryableNoInitProbeFailure(final StorageException e) {
+        Throwable cause = e.getCause();
+        while (cause != null) {
+            if (cause instanceof BanyanDBException) {
+                return isTransientBanyanDBProbeFailure((BanyanDBException) cause);
+            }
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
+    private static boolean isTransientBanyanDBProbeFailure(final BanyanDBException e) {
+        final Status.Code code = e.getStatus();
+        if (Status.Code.UNAVAILABLE.equals(code)
+            || Status.Code.DEADLINE_EXCEEDED.equals(code)
+            || Status.Code.CANCELLED.equals(code)
+            || Status.Code.RESOURCE_EXHAUSTED.equals(code)
+            || Status.Code.ABORTED.equals(code)) {
+            return true;
+        }
+        if (!Status.Code.UNKNOWN.equals(code)) {
+            return false;
+        }
+        final String message = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+        return message.contains("client connection is closing")
+            || message.contains("connection is closing")
+            || message.contains("transport is closing")
+            || message.contains("connection refused")
+            || message.contains("connection reset")
+            || message.contains("broken pipe");
     }
 
     @Override
@@ -144,11 +190,13 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
                 installInfo.setAllExist(false);
                 return installInfo;
             } else {
-                // Run shape-compat checks unless we're in the legacy no-init poll loop
-                // path. failOnAbsence implies the caller wants strict verification even
-                // in non-init mode (VERIFY_SCHEMA_ONLY), so honour that instead of just
-                // gating on RunningMode.
-                final boolean runShapeChecks = !RunningMode.isNoInitMode() || opt.getFlags().isFailOnAbsence();
+                // Run shape-compat checks — and the updates they drive for withSchemaChange —
+                // unless this is the static boot-time path deferring to the init OAP. The
+                // runtime-rule DSL opts (withSchemaChange / verifySchemaOnly) are never
+                // deferred, so an operator-driven shape UPDATE reconciles on a no-init OAP
+                // exactly as on a default / standalone one. (verifySchemaOnly still runs the
+                // checks but records SKIPPED_SHAPE_MISMATCH instead of writing.)
+                final boolean runShapeChecks = !deferDDLToInitNode(opt);
                 if (model.isTimeSeries()) {
                     // register models only locally(Schema cache) but not remotely
                     if (model.isRecord()) {
@@ -240,7 +288,62 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
      */
     private void fenceOnRevision(final BanyanDBClient client, final StorageManipulationOpt opt,
                                  final String context) throws BanyanDBException {
+        if (opt.isDeferFence()) {
+            // Batched apply: do NOT fence per resource. Register a single flush that the apply
+            // orchestration runs once after all DDL is fired (StorageManipulationOpt#runDeferredFence),
+            // so a multi-rule file waits on ONE barrier on the cumulative max revision instead of
+            // one fence per metric/downsampling. The closure reads opt.getMaxModRevision() at flush
+            // time, after every resource has recorded its revision.
+            opt.setDeferredFence(() -> {
+                try {
+                    doDeferredFence(client, opt, "batched apply");
+                } catch (final BanyanDBException e) {
+                    throw new StorageException("batched schema fence failed", e);
+                }
+            });
+            return;
+        }
+        doFenceOnRevision(client, opt, context);
+    }
+
+    private void doFenceOnRevision(final BanyanDBClient client, final StorageManipulationOpt opt,
+                                   final String context) throws BanyanDBException {
+        doFenceOnRevisionValue(client, opt.getMaxModRevision(), context);
+    }
+
+    /**
+     * The deferred (batched) fence the runtime-rule apply runs once after all DDL. Unlike the inline
+     * {@link #doFenceOnRevisionValue}, this (1) honors the opt's configured timeout
+     * ({@link StorageManipulationOpt#getFenceTimeoutMs()}, the runtime-rule 3-min budget) instead of
+     * the short inline {@link #FENCE_TIMEOUT}, and (2) records the outcome (applied + laggard node
+     * ids) on the opt so the orchestrator can mark {@code APPLIED} vs {@code DEGRADED} and gate the
+     * dispatch resume on this fence. A laggard timeout is still a non-fatal WARN.
+     */
+    private void doDeferredFence(final BanyanDBClient client, final StorageManipulationOpt opt,
+                                 final String context) throws BanyanDBException {
         final long rev = opt.getMaxModRevision();
+        if (rev <= 0L) {
+            return;
+        }
+        final Duration timeout = opt.getFenceTimeoutMs() > 0L
+            ? Duration.ofMillis(opt.getFenceTimeoutMs())
+            : FENCE_TIMEOUT;
+        final SchemaWatcher.Result result = client.getSchemaWatcher().awaitRevisionApplied(rev, timeout);
+        if (!result.isApplied()) {
+            log.warn("BanyanDB schema-watch fence did NOT confirm revision {} within {} ms for {}; "
+                + "proceeding anyway. Laggards: {}", rev, timeout.toMillis(), context, result.getLaggards());
+            final List<String> laggardIds = result.getLaggards().stream()
+                .map(l -> l.getNode())
+                .collect(Collectors.toList());
+            opt.setFenceOutcome(new StorageManipulationOpt.FenceOutcome(false, laggardIds));
+        } else {
+            log.debug("BanyanDB schema-watch fence confirmed revision {} for {}", rev, context);
+            opt.setFenceOutcome(new StorageManipulationOpt.FenceOutcome(true, List.of()));
+        }
+    }
+
+    private void doFenceOnRevisionValue(final BanyanDBClient client, final long rev,
+                                        final String context) throws BanyanDBException {
         if (rev <= 0L) {
             return;
         }
@@ -410,6 +513,13 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
             final String group = metadata.getGroup();
             final String name = metadata.name();
             log.info("drop BanyanDB schema kind={} {}:{}", metadata.getKind(), group, name);
+            // Tombstone revision of THIS drop's primary resource only — used to decide the
+            // deletion fence. It must be the primary's own revision, NOT opt.getMaxModRevision():
+            // a single opt is reused across many files in a tick, so the cumulative max can carry
+            // an unrelated earlier create/binding revision and make a tombstone-less delete
+            // (primary revision 0) skip the AwaitSchemaDeleted fallback. 0 for trace/property,
+            // whose delete RPCs have no revision-returning variant — those always key-fence.
+            long primaryDeleteRev = StorageManipulationOpt.DEFAULT_MOD_REVISION;
             switch (metadata.getKind()) {
                 case MEASURE:
                     // Drop the TopN aggregations first (if any), then index rule bindings, index rules, then the measure.
@@ -421,11 +531,13 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
                         }
                     }
                     dropIndexRuleBindingsBestEffort(client, group, name, opt);
-                    opt.recordModRevision(client.deleteMeasureWithRevision(group, name));
+                    primaryDeleteRev = client.deleteMeasureWithRevision(group, name);
+                    opt.recordModRevision(primaryDeleteRev);
                     break;
                 case STREAM:
                     dropIndexRuleBindingsBestEffort(client, group, name, opt);
-                    opt.recordModRevision(client.deleteStreamWithRevision(group, name));
+                    primaryDeleteRev = client.deleteStreamWithRevision(group, name);
+                    opt.recordModRevision(primaryDeleteRev);
                     break;
                 case TRACE:
                     dropIndexRuleBindingsBestEffort(client, group, name, opt);
@@ -439,9 +551,9 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
                         "dropTable unsupported kind=" + metadata.getKind() + " for model " + model.getName());
             }
             // Fence: prefer the revision-based wait when the server recorded a tombstone
-            // mod_revision; otherwise fall back to AwaitSchemaDeleted keyed on the
-            // primary resource so callers get a hard "removed everywhere" signal.
-            fenceOnRevisionOrDeletion(client, opt, metadata, "dropTable:" + model.getName());
+            // mod_revision for THIS resource; otherwise fall back to AwaitSchemaDeleted keyed on
+            // the primary resource so callers get a hard "removed everywhere" signal.
+            fenceOnRevisionOrDeletion(client, metadata, primaryDeleteRev, "dropTable:" + model.getName());
         } catch (BanyanDBException ex) {
             if (Status.Code.NOT_FOUND.equals(ex.getStatus())) {
                 log.info("BanyanDB schema {} already absent on drop (idempotent)", model.getName());
@@ -452,22 +564,32 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
     }
 
     /**
-     * Prefer {@code AwaitRevisionApplied(maxRev)} when the registry returned a
-     * non-zero tombstone revision; otherwise fall back to
+     * Prefer {@code AwaitRevisionApplied(primaryDeleteRev)} when the registry returned a
+     * non-zero tombstone revision for the primary resource; otherwise fall back to
      * {@code AwaitSchemaDeleted(key)} keyed on the primary resource. The fallback
      * exists because {@code mod_revision == 0} on a delete response means the server
      * did not record a tombstone — the revision-based fence cannot observe a
      * deletion that didn't get one.
+     *
+     * <p>The decision keys on {@code primaryDeleteRev} — the primary resource's own delete
+     * revision — NOT {@code opt.getMaxModRevision()}. A single opt is shared across every file
+     * in a reconciler tick, so its cumulative max can hold an unrelated earlier create/binding
+     * revision; using it here would make a tombstone-less primary delete take the revision
+     * branch and silently skip {@code AwaitSchemaDeleted}. Because the primary delete is issued
+     * last (after TopN + bindings), its revision is the highest of this drop and fencing on it
+     * also covers the earlier lower-revision deletes of the same drop.
      */
-    private void fenceOnRevisionOrDeletion(final BanyanDBClient client, final StorageManipulationOpt opt,
+    private void fenceOnRevisionOrDeletion(final BanyanDBClient client,
                                            final MetadataRegistry.SchemaMetadata metadata,
+                                           final long primaryDeleteRev,
                                            final String context) throws BanyanDBException {
-        final long rev = opt.getMaxModRevision();
-        if (rev > 0L) {
-            fenceOnRevision(client, opt, context);
+        if (primaryDeleteRev > 0L) {
+            // Drops fence inline (never deferred): a deletion's visibility is per-key and must
+            // not ride a batched revision flush — drops stay correct even under a deferFence opt.
+            doFenceOnRevisionValue(client, primaryDeleteRev, context);
             return;
         }
-        // mod_revision was 0 on every delete — fall back to key-based deletion fence.
+        // mod_revision was 0 on the primary delete — fall back to key-based deletion fence.
         final String kind;
         switch (metadata.getKind()) {
             case MEASURE:
@@ -637,10 +759,15 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
             optsBuilder.addAllDefaultStages(metadata.getResource().getDefaultQueryStages());
         }
         gBuilder.setResourceOpts(optsBuilder.build());
-        if (!RunningMode.isNoInitMode()) {
-            if (!groupAligned.contains(metadata.getGroup())) {
+        // Group DDL follows the opt, not RunningMode: a runtime-rule withSchemaChange
+        // creates / updates the group on whatever node reaches here (peers short-circuit
+        // earlier via inspectBackend=false), while the static boot path defers to the init
+        // OAP on no-init. Create is gated on createMissing and update on !failOnShapeMismatch
+        // so verifySchemaOnly stays read-only even though it is not deferred.
+        if (!deferDDLToInitNode(opt) && !groupAligned.contains(metadata.getGroup())) {
+            if (!resourceExist.isHasGroup()) {
                 // create the group if not exist
-                if (!resourceExist.isHasGroup()) {
+                if (opt.getFlags().isCreateMissing()) {
                     try {
                         Group g = client.define(gBuilder.build());
                         if (g != null) {
@@ -653,16 +780,16 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
                             throw ex;
                         }
                     }
-                } else {
-                    // update the group if necessary
-                    if (this.checkGroup(metadata, client)) {
-                        opt.recordModRevision(client.update(gBuilder.build()));
-                        log.info("group {} updated", metadata.getGroup());
-                    }
                 }
-                // mark the group as aligned
-                groupAligned.add(metadata.getGroup());
+            } else {
+                // update the group if necessary
+                if (!opt.getFlags().isFailOnShapeMismatch() && this.checkGroup(metadata, client)) {
+                    opt.recordModRevision(client.update(gBuilder.build()));
+                    log.info("group {} updated", metadata.getGroup());
+                }
             }
+            // mark the group as aligned
+            groupAligned.add(metadata.getGroup());
         }
         return resourceExist;
     }
@@ -1283,6 +1410,24 @@ public class BanyanDBIndexInstaller extends ModelInstaller {
      * schema cache the local DAOs read from so this node can translate Model ↔ BanyanDB
      * proto for sample ingest / queries.
      */
+    @Override
+    protected void populateLocalCacheOnly(final Model model, final StorageManipulationOpt opt) {
+        // inspectBackend=false (peer / local-cache-only tick): the main owns the backend
+        // resource; this node only (re)derives its local MetadataRegistry entry so its DAOs
+        // can translate this model. RPC-free, and an overwrite via register*Model — keeps a
+        // peer's cache in lockstep with a reshaped model that re-fires whenCreating, which the
+        // read-side self-heal (fill-if-absent only) cannot do.
+        final DownSamplingConfigService downSamplingConfigService = moduleManager.find(CoreModule.NAME)
+                                                                                 .provider()
+                                                                                 .getService(DownSamplingConfigService.class);
+        registerLocallyByKind(model, downSamplingConfigService);
+    }
+
+    @Override
+    protected void evictLocalCache(final Model model) {
+        MetadataRegistry.INSTANCE.evict(model);
+    }
+
     private void registerLocallyByKind(final Model model,
                                         final DownSamplingConfigService downSamplingConfigService) {
         if (model.isTimeSeries()) {

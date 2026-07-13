@@ -82,7 +82,7 @@ You could have two options
 Zookeeper is a very common and widely used cluster coordinator. Set the **cluster/selector** to **zookeeper** in the yml
 to enable it.
 
-Required Zookeeper version: 3.5+
+Supported Zookeeper server version: 3.6+. The bundled ZooKeeper client library is 3.9.x.
 
 ```yaml
 cluster:
@@ -92,11 +92,11 @@ cluster:
 
 - `hostPort` is the list of zookeeper servers. Format is `IP1:PORT1,IP2:PORT2,...,IPn:PORTn`
 - `enableACL`
-  enable [Zookeeper ACL](https://zookeeper.apache.org/doc/r3.5.5/zookeeperProgrammers.html#sc_ZooKeeperAccessControl) to
+  enable [Zookeeper ACL](https://zookeeper.apache.org/doc/r3.9.3/zookeeperProgrammers.html#sc_ZooKeeperAccessControl) to
   control access to its znode.
 - `schema` is Zookeeper ACL schemas.
 - `expression` is a expression of ACL. The format of the expression is specific to
-  the [schema](https://zookeeper.apache.org/doc/r3.5.5/zookeeperProgrammers.html#sc_BuiltinACLSchemes).
+  the [schema](https://zookeeper.apache.org/doc/r3.9.3/zookeeperProgrammers.html#sc_BuiltinACLSchemes).
 - `hostPort`, `baseSleepTimeMs` and `maxRetries` are settings of Zookeeper curator client.
 
 Note:
@@ -135,6 +135,8 @@ cluster:
 
 Recently, the Consul system has become more and more popular, and many companies and developers now use Consul as
 their service discovery solution. Set the **cluster/selector** to **consul** in the yml to enable it.
+
+The bundled Consul client library is the maintained fork `org.kiwiproject:consul-client` `0.9.x`, replacing the unmaintained `com.orbitz.consul:consul-client`.
 
 ```yaml
 cluster:

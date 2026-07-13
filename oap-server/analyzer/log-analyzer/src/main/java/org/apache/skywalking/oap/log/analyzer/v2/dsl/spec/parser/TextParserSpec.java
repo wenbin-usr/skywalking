@@ -20,32 +20,60 @@ package org.apache.skywalking.oap.log.analyzer.v2.dsl.spec.parser;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.apm.network.logging.v3.LogData;
 import org.apache.skywalking.oap.log.analyzer.v2.dsl.ExecutionContext;
 import org.apache.skywalking.oap.log.analyzer.v2.provider.LogAnalyzerModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
 
+@Slf4j
 public class TextParserSpec extends AbstractParserSpec {
+    private final ParseFailureWarnLimiter warnLimiter =
+        new ParseFailureWarnLimiter(ParseFailureWarnLimiter.DEFAULT_INTERVAL_MS);
+
     public TextParserSpec(final ModuleManager moduleManager,
                           final LogAnalyzerModuleConfig moduleConfig) {
         super(moduleManager, moduleConfig);
     }
 
-    public void regexp(final ExecutionContext ctx, final String regexp) {
-        regexp(ctx, Pattern.compile(regexp));
+    public void regexp(final ExecutionContext ctx, final String regexp, final boolean abortOnFailure) {
+        regexp(ctx, Pattern.compile(regexp), abortOnFailure);
     }
 
-    public void regexp(final ExecutionContext ctx, final Pattern pattern) {
+    public void regexp(final ExecutionContext ctx, final Pattern pattern, final boolean abortOnFailure) {
         if (ctx.shouldAbort()) {
             return;
         }
-        final LogData.Builder log = (LogData.Builder) ctx.input();
-        final Matcher matcher = pattern.matcher(log.getBody().getText().getText());
+        final Object rawInput = ctx.input();
+        if (!(rawInput instanceof LogData.Builder)) {
+            // Typed-proto input (e.g. Envoy ALS) reaches a text{regexp} rule as a routing
+            // mismatch, not a text body — honor abortOnFailure without a ClassCastException.
+            if (abortOnFailure) {
+                final String actual = rawInput == null ? "null" : rawInput.getClass().getSimpleName();
+                ctx.dropReason("text parser: input is not a log body (expected LogData, got " + actual + ")");
+                ctx.abort();
+            }
+            return;
+        }
+        final LogData.Builder logData = (LogData.Builder) rawInput;
+        final Matcher matcher = pattern.matcher(logData.getBody().getText().getText());
         final boolean matched = matcher.find();
         if (matched) {
             ctx.parsed(matcher);
-        } else if (abortOnFailure()) {
+        } else if (abortOnFailure) {
+            // Reason set only on the aborting path: a continued log is not dropped, and a
+            // stale reason would leak onto a later abort {} statement.
+            ctx.dropReason("text parser: regexp did not match the log body");
+            final long suppressed = warnLimiter.acquire();
+            if (suppressed >= 0) {
+                log.warn("LAL text parser regexp did not match the log body (service={})"
+                        + " ({} similar failures suppressed since the last report)",
+                    ctx.metadata().getService(), suppressed);
+            }
             ctx.abort();
+        } else if (log.isDebugEnabled()) {
+            log.debug("LAL text parser regexp did not match the log body (service={}, abortOnFailure=false)",
+                ctx.metadata().getService());
         }
     }
 

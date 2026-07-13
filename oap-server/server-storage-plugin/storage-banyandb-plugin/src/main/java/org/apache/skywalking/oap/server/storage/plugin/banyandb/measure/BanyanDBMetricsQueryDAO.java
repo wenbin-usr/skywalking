@@ -59,6 +59,9 @@ public class BanyanDBMetricsQueryDAO extends AbstractBanyanDBDAO implements IMet
     @Override
     public MetricsValues readMetricsValues(MetricsCondition condition, String valueColumnName, Duration duration) throws IOException {
         String modelName = condition.getName();
+        // findMetricMetadata is overlay-aware: for a foreign metric (the admin inspect value path) it
+        // synthesizes a read-only schema from InspectQueryContext; a local metric returns the registered
+        // one. So this read path no longer special-cases foreign metrics.
         MetadataRegistry.Schema schema = MetadataRegistry.INSTANCE.findMetricMetadata(modelName, duration.getStep());
         if (schema == null) {
             throw new IOException("schema is not registered");
@@ -169,12 +172,26 @@ public class BanyanDBMetricsQueryDAO extends AbstractBanyanDBDAO implements IMet
     @Override
     public List<String> listEntityIdsInRange(final String metricName,
                                              final String valueColumnName,
+                                             final String valueType,
                                              final Duration duration,
                                              final int limit) throws IOException {
         final boolean isColdStage = duration != null && duration.isColdStage();
-        final MetadataRegistry.Schema schema = MetadataRegistry.INSTANCE.findMetricMetadata(metricName, duration.getStep());
-        if (schema == null) {
-            throw new IOException("schema is not registered");
+        final MetadataRegistry.Schema schema;
+        if (valueType != null) {
+            // Foreign metric: no local schema. Synthesize a read-only measure schema from the
+            // deterministic name → measure/group mapping plus the caller's value column / type.
+            schema = MetadataRegistry.INSTANCE.synthesizeForeignMetricSchema(
+                metricName, duration.getStep(), valueColumnName, valueType);
+            if (schema == null) {
+                throw new IOException(
+                    "cannot inspect foreign metric " + metricName + " on BanyanDB: this node has no "
+                        + "registered measure to resolve the namespace/group from");
+            }
+        } else {
+            schema = MetadataRegistry.INSTANCE.findMetricMetadata(metricName, duration.getStep());
+            if (schema == null) {
+                throw new IOException("schema is not registered");
+            }
         }
         final MeasureQueryResponse resp = query(
             isColdStage, schema,

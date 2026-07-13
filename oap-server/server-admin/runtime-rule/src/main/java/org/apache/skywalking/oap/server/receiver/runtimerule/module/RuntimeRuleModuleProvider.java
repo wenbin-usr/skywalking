@@ -41,6 +41,7 @@ import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedExcepti
 import org.apache.skywalking.oap.server.receiver.runtimerule.cluster.RuntimeRuleClusterClient;
 import org.apache.skywalking.oap.server.receiver.runtimerule.cluster.RuntimeRuleClusterServiceImpl;
 import org.apache.skywalking.oap.server.receiver.runtimerule.reconcile.DSLManager;
+import org.apache.skywalking.oap.server.receiver.runtimerule.status.SchemaApplyCoordinator;
 import org.apache.skywalking.oap.server.receiver.runtimerule.rest.RuntimeRuleRestHandler;
 import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
 import org.apache.skywalking.oap.server.telemetry.api.TelemetryRelatedContext;
@@ -218,6 +219,20 @@ public class RuntimeRuleModuleProvider extends ModuleProvider {
      * unchanged bundles.
      */
     private static final long SCHEDULER_INITIAL_DELAY_SECONDS = 2L;
+    /** Retain a tracked apply-status this long after its last update so a post-apply UI poll (and
+     *  a post-refresh content query) still resolves, then reap it to bound memory. */
+    private static final long APPLY_STATUS_TTL_MS = 3_600_000L;
+    /** How often the apply-status eviction sweep runs on the reconciler executor. */
+    private static final long APPLY_STATUS_EVICT_INTERVAL_SECONDS = 300L;
+
+    /**
+     * Env var carrying this OAP's unique per-node identity — the Kubernetes pod UID, injected
+     * by the skywalking-helm chart / swck operator from {@code metadata.uid}. Used as the
+     * runtime-rule cluster {@code selfNodeId} when present, because the telemetry-id fallback
+     * (gRPC {@code host_port}) collides across replicas under k8s where the bind host is
+     * {@code 0.0.0.0} (every pod reports {@code 0.0.0.0_11800}).
+     */
+    private static final String COLLECTOR_UID_ENV = "SKYWALKING_COLLECTOR_UID";
 
     private RuntimeRuleModuleConfig moduleConfig;
     private ScheduledExecutorService reconcilerExecutor;
@@ -262,7 +277,8 @@ public class RuntimeRuleModuleProvider extends ModuleProvider {
         // RuleEngineRegistry from the per-DSL state maps it owns.
         dslManager = new DSLManager(
             getManager(),
-            moduleConfig.getSelfHealThresholdSeconds() * 1000L
+            moduleConfig.getSelfHealThresholdSeconds() * 1000L,
+            moduleConfig.getDeferredFenceTimeoutSeconds() * 1000L
         );
 
         // Cluster-facing Suspend client: fans out to every non-self peer on the OAP cluster bus
@@ -272,7 +288,12 @@ public class RuntimeRuleModuleProvider extends ModuleProvider {
         // cluster gRPC bus (default 11800). Privileged admin RPCs stay on the
         // admin-only port (default 17129) so a compromised node on the agent
         // network cannot reach Suspend/Resume/Forward.
-        final String selfNodeId = TelemetryRelatedContext.INSTANCE.getId();
+        // Resolve this node's stable, unique cluster identity HERE in start() — before
+        // notifyAfterCompleted() applies any rule — so the node knows who it is before it
+        // forwards a write to the main or broadcasts Suspend/Resume. Must be unique per
+        // replica: it is the Forward/Suspend/Resume sender id and the key the receiver's
+        // self-loop guard compares against. See resolveSelfNodeId().
+        final String selfNodeId = resolveSelfNodeId();
         final AdminClusterChannelManager adminPeerChannels =
             getManager().find(AdminServerModule.NAME).provider()
                         .getService(AdminClusterChannelManager.class);
@@ -343,24 +364,25 @@ public class RuntimeRuleModuleProvider extends ModuleProvider {
         // applies under {@code withSchemaChange} if this node resolves as main. Backend DDL is
         // idempotent so the re-apply costs nothing.
         try {
-            // atBoot=true so a no-init OAP picks verifySchemaOnly and refuses to
-            // start with a missing or shape-mismatched backend (k8s pod backloop)
+            // atBoot=true so a cluster peer picks verifySchemaOnly and refuses to
+            // start against a missing or shape-mismatched backend (k8s pod backloop)
             // instead of silently registering local workers against schema that
-            // doesn't exist. Init / default-mode OAPs are unaffected — their boot
-            // opt mirrors the standard tick choice for those modes.
+            // doesn't exist; the main picks withSchemaChange and re-creates missing
+            // runtime schema. The choice is by cluster main-ness, not running mode
+            // (see DSLManager.tickStorageOpt); init mode is the lone exception.
             dslManager.tick(true);
             log.info("Runtime rule dslManager: synchronous first tick completed "
                 + "(runtime-only DB rows are now applied locally).");
         } catch (final RuntimeException re) {
-            // Boot pass under verifySchemaOnly re-throws missing/mismatch as a
-            // RuntimeException so module bootstrap aborts. Translate to
-            // ModuleStartException so the OAP exit message points the operator at
-            // the right place.
+            // The boot pass re-throws as a RuntimeException so module bootstrap aborts —
+            // a peer's verifySchemaOnly hitting a missing/mismatched backend, or a main's
+            // withSchemaChange failing to create it. Translate to ModuleStartException so
+            // the OAP exit message points the operator at the right place.
             throw new ModuleStartException(
-                "Runtime rule dslManager boot pass failed under verifySchemaOnly; "
-                    + "the backend schema is missing or diverges from the declared rule. "
-                    + "Bring up the init OAP first or align rule files with the backend, "
-                    + "then restart this node.",
+                "Runtime rule dslManager boot pass failed: backend schema is missing, "
+                    + "diverges from the declared rule, or could not be created. On a peer, "
+                    + "bring up the cluster main (or init OAP) first; on the main, align the "
+                    + "rule files with the backend, then restart this node.",
                 re);
         } catch (final Throwable t) {
             log.warn("Runtime rule dslManager: synchronous first tick failed — "
@@ -391,6 +413,42 @@ public class RuntimeRuleModuleProvider extends ModuleProvider {
         );
         log.info("Runtime rule dslManager scheduled: first tick in {} s, then every {} s.",
             SCHEDULER_INITIAL_DELAY_SECONDS, intervalSeconds);
+
+        // Bound the apply-status coordinator's memory: reap tracked applies past the retention
+        // window (terminal ones linger long enough for a post-apply UI poll; a stale PENDING from
+        // a missed branch is reaped too — a later query then returns UNKNOWN and the caller falls
+        // back to the durable content hash). Reuses the same single-thread executor; the sweep is
+        // O(tracked) and cheap.
+        reconcilerExecutor.scheduleWithFixedDelay(
+            () -> SchemaApplyCoordinator.INSTANCE.evictExpired(APPLY_STATUS_TTL_MS),
+            APPLY_STATUS_EVICT_INTERVAL_SECONDS, APPLY_STATUS_EVICT_INTERVAL_SECONDS, TimeUnit.SECONDS
+        );
+    }
+
+    /**
+     * Resolve this node's unique, stable runtime-rule cluster identity. Prefers the Kubernetes
+     * pod UID ({@value #COLLECTOR_UID_ENV}, injected by the helm chart / swck operator from
+     * {@code metadata.uid}) because it is unique per replica; falls back to the telemetry id
+     * ({@code host_port}) for non-k8s deployments where each node already has a distinct host.
+     *
+     * <p>Why not the telemetry id directly: under Kubernetes the agent gRPC bind host is
+     * {@code 0.0.0.0}, so every replica's telemetry id is {@code 0.0.0.0_11800} — identical.
+     * That collision makes the receiver's self-loop guard (sender id == own id) reject a
+     * legitimate peer-to-peer Forward as if it had looped back, breaking cross-node writes on
+     * any multi-replica k8s cluster. {@code MainRouter} already routes correctly off the
+     * cluster peer addresses (pod IPs); only the self-identity used for loop suppression needs
+     * to be unique, which the pod UID guarantees.
+     */
+    private String resolveSelfNodeId() {
+        final String collectorUid = System.getenv(COLLECTOR_UID_ENV);
+        if (collectorUid != null && !collectorUid.trim().isEmpty()) {
+            log.info("Runtime rule: selfNodeId from {} (pod UID) = {}", COLLECTOR_UID_ENV, collectorUid);
+            return collectorUid;
+        }
+        final String telemetryId = TelemetryRelatedContext.INSTANCE.getId();
+        log.info("Runtime rule: {} not set; selfNodeId falls back to telemetry id = {} "
+            + "(ensure it is unique per node in a multi-node cluster).", COLLECTOR_UID_ENV, telemetryId);
+        return telemetryId;
     }
 
     @Override

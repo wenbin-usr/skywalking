@@ -150,6 +150,13 @@ public final class DSLManager {
     @Getter
     private final long selfHealThresholdMs;
 
+    /** Timeout for the runtime-rule deferred/batched BanyanDB schema fence on the operator REST
+     *  apply path (default 3 min). Read via {@link #getDeferredFenceTimeoutMs()} by the REST
+     *  orchestrator, which builds the deferred-fence opt with it
+     *  ({@code RuntimeRuleModuleConfig.deferredFenceTimeoutSeconds}). */
+    @Getter
+    private final long deferredFenceTimeoutMs;
+
     /** Lock-observability wrapper. Owned by the DSLManager; the REST handler borrows via
      *  {@link #getLockMetrics()} so every lock acquire path reports to the same histograms. */
     @Getter
@@ -183,12 +190,14 @@ public final class DSLManager {
     private final RuleEngineRegistry engineRegistry;
 
     public DSLManager(final ModuleManager moduleManager,
-                      final long selfHealThresholdMs) {
+                      final long selfHealThresholdMs,
+                      final long deferredFenceTimeoutMs) {
         this.moduleManager = Objects.requireNonNull(moduleManager, "moduleManager");
         this.engineRegistry = new RuleEngineRegistry();
         this.engineRegistry.register(new MalRuleEngine(this.rules, this.moduleManager));
         this.engineRegistry.register(new LalRuleEngine(this.rules, this.moduleManager));
         this.selfHealThresholdMs = selfHealThresholdMs;
+        this.deferredFenceTimeoutMs = deferredFenceTimeoutMs;
         this.lockMetrics =
             new LockMetrics(moduleManager);
         this.suspendCoord = new SuspendResumeCoordinator(
@@ -229,15 +238,17 @@ public final class DSLManager {
 
     /**
      * Variant invoked once at boot from {@code RuntimeRuleModuleProvider.notifyAfterCompleted}
-     * with {@code atBoot=true}. The boot pass on a no-init OAP picks
+     * with {@code atBoot=true}. The boot pass on a cluster <em>peer</em> picks
      * {@link StorageManipulationOpt#verifySchemaOnly()} so missing or shape-mismatched
      * backend schema fails the bootstrap (k8s pod backloop) instead of silently
-     * proceeding. The scheduled executor calls the no-arg overload so subsequent ticks
-     * stay on the lenient {@code withoutSchemaChange} retry path.
+     * proceeding; the <em>main</em> picks {@link StorageManipulationOpt#withSchemaChange()}
+     * so it re-creates any missing runtime schema. The scheduled executor calls the no-arg
+     * overload so subsequent peer ticks stay on the lenient {@code withoutSchemaChange}
+     * retry path.
      *
-     * <p>Boot semantics are scoped to no-init mode only — init-mode OAPs continue to
-     * pick {@link StorageManipulationOpt#schemaCreateIfAbsent()} (boot creates), and
-     * default-mode OAPs continue to pick by cluster main-ness.
+     * <p>The choice is by cluster main-ness, not running mode — no-init and default behave
+     * identically (see {@link #tickStorageOpt}). Init mode is the one exception: the
+     * dedicated initialiser picks {@link StorageManipulationOpt#schemaCreateIfAbsent()}.
      */
     public void tick(final boolean atBoot) {
         try {
@@ -359,7 +370,7 @@ public final class DSLManager {
      */
     public DSLRuntimeState applyNowForRuleFile(final RuntimeRuleManagementDAO.RuntimeRuleFile ruleFile,
                                             final boolean deferCommit) {
-        return applyNowForRuleFile(ruleFile, deferCommit, StorageManipulationOpt.withSchemaChange());
+        return applyNowForRuleFile(ruleFile, deferCommit, StorageManipulationOpt.withSchemaChangeDeferredFence());
     }
 
     /**
@@ -708,44 +719,38 @@ public final class DSLManager {
     /**
      * Pick the {@link StorageManipulationOpt} for a tick-driven apply.
      *
-     * <p>Two axes:
+     * <p>For runtime-rule (DSL) DDL the only axis that matters is <b>cluster main-ness</b> —
+     * <em>not</em> the init / no-init / default running mode. The running-mode axis governs
+     * <em>static</em> schema (the init OAP creates it, no-init OAPs wait); a runtime rule is
+     * created at runtime and the init OAP never knows about it, so gating DSL DDL on running
+     * mode would leave every production (no-init) cluster unable to apply rules. no-init and
+     * default therefore behave identically here.
      *
-     * <p><b>RunningMode (boot/init context).</b>
+     * <p><b>init mode</b> — the one exception. The dedicated initialiser picks
+     * {@link StorageManipulationOpt#schemaCreateIfAbsent()}, matching the static-rule install
+     * path (create-if-absent, idempotent against a backend that already holds the resource).
+     *
+     * <p><b>Everything else (no-init or default)</b> — branch on main-ness:
      * <ul>
-     *   <li>{@code init} mode — OAP is the dedicated initialiser; install schema if
-     *       absent. {@link StorageManipulationOpt#schemaCreateIfAbsent()} matches what the
-     *       rest of the static-rule install path does in init mode (idempotent against
-     *       backends that already hold the table).
-     *   <li>{@code no-init} mode — this OAP must NOT touch the backend; the init OAP
-     *       owns schema. The opt depends on whether this is the synchronous boot pass
-     *       or a scheduled tick:
+     *   <li>Self is main → {@link StorageManipulationOpt#withSchemaChange()}. The authority
+     *       creates / updates / drops backend schema. The boot pass uses this too, so a main
+     *       re-creates any missing runtime schema at startup.
+     *   <li>Peer (someone else is main):
      *     <ul>
      *       <li><b>Boot pass</b> ({@code atBoot=true}) →
-     *           {@link StorageManipulationOpt#verifySchemaOnly()}. Strict: backend
-     *           resources must already exist with the declared shape. A missing or
-     *           mismatched schema fails the bootstrap (k8s pod backloop) — operator must
-     *           bring up the init OAP first, or align rule files with the backend.
+     *           {@link StorageManipulationOpt#verifySchemaOnly()}. Strict: refuse to start
+     *           against a backend the main hasn't prepared (k8s pod backloop until the main
+     *           converges).
      *       <li><b>Scheduled tick</b> ({@code atBoot=false}) →
      *           {@link StorageManipulationOpt#withoutSchemaChange()}. Lenient: the timer
-     *           retries forever without raising errors so transient absence (init OAP
-     *           still catching up between ticks) self-heals.
+     *           retries without raising so transient absence (main still catching up between
+     *           ticks) self-heals.
      *     </ul>
-     *   <li>default mode (regular running OAP) — branch on cluster main-ness, see below.
      * </ul>
      *
-     * <p><b>Cluster main-ness (default mode only).</b>
-     * <ul>
-     *   <li>Self is main → {@link StorageManipulationOpt#withSchemaChange()}. The REST path
-     *       has the same shape; tick rarely runs on main because REST usually
-     *       converges the main's state first.
-     *   <li>Peer (someone else is main) → {@link StorageManipulationOpt#withoutSchemaChange()}.
-     *       Local MeterSystem + MetadataRegistry populate so the peer dispatches samples
-     *       correctly, but no server-side DDL fires.
-     * </ul>
-     *
-     * <p>When the cluster module isn't wired (embedded test topology), {@link
-     * MainRouter#isSelfMain} returns {@code true} and the default-mode branch falls
-     * through to {@code withSchemaChange} — single-process deployments are always main.
+     * <p>When the cluster module isn't wired (embedded / single-process topology),
+     * {@link MainRouter#isSelfMain} returns {@code true} so we fall through to
+     * {@code withSchemaChange} — a single process is always its own main.
      *
      * @param atBoot true for the synchronous one-shot pass invoked from
      *               {@code RuntimeRuleModuleProvider.notifyAfterCompleted}; false for
@@ -755,20 +760,21 @@ public final class DSLManager {
         if (RunningMode.isInitMode()) {
             return StorageManipulationOpt.schemaCreateIfAbsent();
         }
-        if (RunningMode.isNoInitMode()) {
-            return atBoot
-                ? StorageManipulationOpt.verifySchemaOnly()
-                : StorageManipulationOpt.withoutSchemaChange();
-        }
+        final boolean selfMain;
         try {
             final AdminClusterChannelManager apm =
                 moduleManager.find(AdminServerModule.NAME).provider()
                              .getService(AdminClusterChannelManager.class);
-            return MainRouter.isSelfMain(apm)
-                ? StorageManipulationOpt.withSchemaChange()
-                : StorageManipulationOpt.withoutSchemaChange();
+            selfMain = MainRouter.isSelfMain(apm);
         } catch (final Throwable t) {
-            return StorageManipulationOpt.withSchemaChange();
+            // Cluster module not wired (embedded / single-process) — always main.
+            return StorageManipulationOpt.withSchemaChangeDeferredFence();
         }
+        if (selfMain) {
+            return StorageManipulationOpt.withSchemaChangeDeferredFence();
+        }
+        return atBoot
+            ? StorageManipulationOpt.verifySchemaOnly()
+            : StorageManipulationOpt.withoutSchemaChange();
     }
 }

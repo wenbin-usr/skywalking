@@ -122,7 +122,7 @@ jobs:
           persist-credentials: false
       - name: Filter
         id: filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           list-files: 'shell'
           predicate-quantifier: 'every'
@@ -390,6 +390,14 @@ jobs:
             config: test/e2e-v2/cases/storage/es/es-sharding/e2e.yaml
             env: ES_VERSION=8.18.8
 
+          - name: Inspect API BanyanDB
+            config: test/e2e-v2/cases/inspect/banyandb/e2e.yaml
+          - name: Inspect API PostgreSQL
+            config: test/e2e-v2/cases/inspect/postgresql/e2e.yaml
+          - name: Inspect API Elasticsearch 8.18.8
+            config: test/e2e-v2/cases/inspect/elasticsearch/e2e.yaml
+            env: ES_VERSION=8.18.8
+
           - name: Runtime Rule MAL Storage BanyanDB
             config: test/e2e-v2/cases/runtime-rule/mal-storage/banyandb/e2e.yaml
           - name: Runtime Rule MAL Storage PostgreSQL
@@ -399,8 +407,9 @@ jobs:
             env: ES_VERSION=8.18.8
           - name: Runtime Rule LAL Hot-Update
             config: test/e2e-v2/cases/runtime-rule/lal/e2e.yaml
-          - name: Runtime Rule Cluster Convergence
+          - name: Runtime Rule Cluster (kind)
             config: test/e2e-v2/cases/runtime-rule/cluster/e2e.yaml
+            runs-on: ubuntu-24.04
           - name: DSL Debug API — MAL
             config: test/e2e-v2/cases/dsl-debugging/mal/e2e.yaml
           - name: DSL Debug API — OAL
@@ -713,6 +722,10 @@ jobs:
             config: test/e2e-v2/cases/kong/e2e.yaml
           - name: Flink
             config: test/e2e-v2/cases/flink/e2e.yaml
+          - name: Airflow
+            config: test/e2e-v2/cases/airflow/mock/e2e.yaml
+          - name: Airflow Cluster
+            config: test/e2e-v2/cases/airflow/cluster/e2e.yaml
 
           - name: OTLP Trace
             config: test/e2e-v2/cases/otlp-traces/e2e.yaml
@@ -760,7 +773,7 @@ jobs:
           name: dist
           path: dist
       - name: Login to ghcr
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -781,16 +794,31 @@ jobs:
         if: matrix.test.docker != null
         run: docker build -t ${{ matrix.test.docker.name }} -f ${{ matrix.test.docker.base }}/${{ matrix.test.docker.file }} ${{ matrix.test.docker.base }}
       - name: ${{ matrix.test.name }}
-        uses: apache/skywalking-infra-e2e@0d91769411db83f6329633df810a36c6ea1a9b02
+        uses: apache/skywalking-infra-e2e@68bbdec303cf2d3df9f2353f970f91938b52f674
         with:
           e2e-file: $GITHUB_WORKSPACE/${{ matrix.test.config }}
-      - if: ${{ failure() }}
+      - if: ${{ failure() || cancelled() }}
         run: |
           df -h
           du -sh .
           docker images
+      # Capture container logs even when the job is CANCELLED (e.g. a case that
+      # hangs and hits the job timeout-minutes is `cancelled`, not `failure`, so a
+      # plain `if: failure()` upload is skipped and produces zero logs). The e2e
+      # action's own log collector also never runs when the trigger hangs, so dump
+      # the docker logs directly here while the containers are still alive.
+      - name: Dump container logs
+        if: ${{ failure() || cancelled() }}
+        run: |
+          LOG_DIR="${{ env.SW_INFRA_E2E_LOG_DIR }}"
+          mkdir -p "$LOG_DIR"
+          docker ps -a > "$LOG_DIR/docker-ps.txt" 2>&1 || true
+          for c in $(docker ps -aq); do
+            name=$(docker inspect -f '{{.Name}}' "$c" | tr -d '/')
+            docker logs "$c" > "$LOG_DIR/$name.log" 2>&1 || true
+          done
       - uses: actions/upload-artifact@v4
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         name: Upload Logs
         with:
           name: test-logs-${{ matrix.test.name }}
@@ -849,13 +877,13 @@ jobs:
           find docker-images -name "*.tar" -exec docker load -i {} \;
           find docker-images -name "*.tar" -exec rm {} \;
       - name: Login to ghcr
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: ALS ${{ matrix.storage }}, ${{ matrix.analyzer }}, istio-${{ matrix.versions.istio }}, k8s-${{ matrix.versions.kubernetes }}
-        uses: apache/skywalking-infra-e2e@0d91769411db83f6329633df810a36c6ea1a9b02
+        uses: apache/skywalking-infra-e2e@68bbdec303cf2d3df9f2353f970f91938b52f674
         env:
           ISTIO_VERSION: ${{ matrix.versions.istio }}
           KUBERNETES_VERSION: ${{ matrix.versions.kubernetes }}
@@ -921,13 +949,13 @@ jobs:
           find docker-images -name "*.tar" -exec docker load -i {} \;
           find docker-images -name "*.tar" -exec rm {} \;
       - name: Login to ghcr
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: ${{ matrix.test.name }}
-        uses: apache/skywalking-infra-e2e@0d91769411db83f6329633df810a36c6ea1a9b02
+        uses: apache/skywalking-infra-e2e@68bbdec303cf2d3df9f2353f970f91938b52f674
         env:
           ISTIO_VERSION: ${{ matrix.versions.istio }}
           KUBERNETES_VERSION: ${{ matrix.versions.kubernetes }}
@@ -991,7 +1019,7 @@ jobs:
         shell: bash
         run: ./mvnw -B -q -f test/e2e-v2/java-test-service/pom.xml clean package
       - name: Java version ${{ matrix.java-version }}
-        uses: apache/skywalking-infra-e2e@0d91769411db83f6329633df810a36c6ea1a9b02
+        uses: apache/skywalking-infra-e2e@68bbdec303cf2d3df9f2353f970f91938b52f674
         env:
           SW_AGENT_JDK_VERSION: ${{ matrix.java-version }}
         with:
@@ -1037,7 +1065,7 @@ jobs:
           name: dist
           path: dist
       - name: Login to ghcr
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1087,16 +1115,31 @@ jobs:
           fi
           docker compose -f ${BANYANDB_DATA_GENERATE_ROOT}/docker-compose.yml down -v
       - name: ${{ matrix.test.name }}
-        uses: apache/skywalking-infra-e2e@0d91769411db83f6329633df810a36c6ea1a9b02
+        uses: apache/skywalking-infra-e2e@68bbdec303cf2d3df9f2353f970f91938b52f674
         with:
           e2e-file: $GITHUB_WORKSPACE/${{ matrix.test.config }}
-      - if: ${{ failure() }}
+      - if: ${{ failure() || cancelled() }}
         run: |
           df -h
           du -sh .
           docker images
+      # Capture container logs even when the job is CANCELLED (e.g. a case that
+      # hangs and hits the job timeout-minutes is `cancelled`, not `failure`, so a
+      # plain `if: failure()` upload is skipped and produces zero logs). The e2e
+      # action's own log collector also never runs when the trigger hangs, so dump
+      # the docker logs directly here while the containers are still alive.
+      - name: Dump container logs
+        if: ${{ failure() || cancelled() }}
+        run: |
+          LOG_DIR="${{ env.SW_INFRA_E2E_LOG_DIR }}"
+          mkdir -p "$LOG_DIR"
+          docker ps -a > "$LOG_DIR/docker-ps.txt" 2>&1 || true
+          for c in $(docker ps -aq); do
+            name=$(docker inspect -f '{{.Name}}' "$c" | tr -d '/')
+            docker logs "$c" > "$LOG_DIR/$name.log" 2>&1 || true
+          done
       - uses: actions/upload-artifact@v4
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         name: Upload Logs
         with:
           name: test-logs-${{ matrix.test.name }}

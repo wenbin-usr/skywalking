@@ -32,6 +32,7 @@ import org.apache.skywalking.oap.server.core.analysis.DownSampling;
 import org.apache.skywalking.oap.server.core.analysis.FunctionCategory;
 import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
 import org.apache.skywalking.oap.server.core.config.ConfigService;
+import org.apache.skywalking.oap.server.core.storage.annotation.InspectQueryContext;
 import org.apache.skywalking.oap.server.core.storage.model.Model;
 import org.apache.skywalking.oap.server.library.client.jdbc.hikaricp.JDBCClient;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
@@ -39,6 +40,7 @@ import org.apache.skywalking.oap.server.library.util.StringUtil;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.TableMetaInfo;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -107,6 +109,17 @@ public class TableHelper {
 
     public List<String> getTablesForRead(String modelName, long timeBucketStart, long timeBucketEnd) {
         final var model = TableMetaInfo.get(modelName);
+        if (model == null && InspectQueryContext.get(modelName) != null) {
+            // A foreign metric (admin inspect value path: InspectQueryContext active on this thread)
+            // has no local model, so its physical function table is unknown. Probe every metric
+            // function table; the metric-prefixed row ids (generateId) keep only this metric's rows.
+            // A non-overlay miss is a genuinely unknown metric — fall through and let it surface.
+            final List<String> tables = new ArrayList<>();
+            for (final var rawTable : getMetricRawTables()) {
+                tables.addAll(getExistingDayTables(rawTable, timeBucketStart, timeBucketEnd));
+            }
+            return tables;
+        }
         final var rawTableName = getTableName(model);
 
         if (!model.isTimeSeries()) {
@@ -164,6 +177,53 @@ public class TableHelper {
         return ttlTimeBuckets
             .stream()
             .map(it -> getTable(rawTableName, it))
+            .filter(table -> {
+                try {
+                    return tableExistence.get(table);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            })
+            .collect(toList());
+    }
+
+    /**
+     * Distinct physical (raw) table names of every aggregation-FUNCTION metric model installed on
+     * this node — the closed set of {@code metrics_<fn>} / {@code meter_<fn>} tables that a foreign
+     * metric (defined by another OAP) must also live in. Used by the inspect probe.
+     *
+     * <p>Filtered to function metrics, NOT all {@code isMetric()} models: metadata "metrics" such as
+     * {@code ServiceTraffic} / {@code InstanceTraffic} / {@code EndpointTraffic} are {@code Metrics}
+     * subclasses (so {@code isMetric()} is true) but carry no aggregation function, no
+     * {@code entity_id}, and no {@code table_name} discriminator column. Probing them with
+     * {@code select entity_id ... where table_name = ?} would hit "column not found" and 500. Only
+     * function metrics are merged into the shared {@code metrics_<fn>} tables and always carry both
+     * columns.
+     */
+    public static List<String> getMetricRawTables() {
+        return TableMetaInfo.getModels().stream()
+            .filter(TableHelper::isFunctionMetric)
+            .map(TableHelper::getTableName)
+            .distinct()
+            .collect(toList());
+    }
+
+    /**
+     * Day-partitioned tables for a RAW physical table name (a metric function table) within a
+     * time-bucket range, filtered to those that actually exist. Unlike
+     * {@link #getTablesForRead(String, long, long)} this needs no local {@link Model}, so it backs
+     * the foreign-metric inspect probe across the node's known function tables.
+     */
+    public List<String> getExistingDayTables(String rawTableName, long timeBucketStart, long timeBucketEnd) {
+        final var timestampStart = TimeBucket.getTimestamp(timeBucketStart);
+        final var timestampEnd = TimeBucket.getTimestamp(timeBucketEnd);
+        final var timeBuckets = LongStream.builder();
+        for (var timestamp = timestampStart; timestamp <= timestampEnd; timestamp += TimeUnit.DAYS.toMillis(1)) {
+            timeBuckets.add(TimeBucket.getTimeBucket(timestamp, DownSampling.Day));
+        }
+        return timeBuckets.build()
+            .distinct()
+            .mapToObj(timeBucket -> getTable(rawTableName, timeBucket))
             .filter(table -> {
                 try {
                     return tableExistence.get(table);

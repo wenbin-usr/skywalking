@@ -393,10 +393,15 @@ layerDefinitions:
 metricsRules:
   - name: device_battery_percentage
     exp: iot_device_battery_level.tagAverage(['service'], ['host'])
-expSuffix: instance(['host'], ['service'], Layer.nameOf('IOT_FLEET'))
+expSuffix: instance(['host'], ['service'], Layer.IOT_FLEET)
 ```
 
 Notes:
+- **Reference a custom layer like a built-in one.** Write `Layer.IOT_FLEET` exactly as you would a
+  built-in such as `Layer.GENERAL` — the compiler lowers every `Layer.<NAME>` reference to a runtime
+  registry lookup, so a custom layer needs no generated static field. (Because the lookup is by name,
+  a misspelled name resolves to `Layer.UNDEFINED` at runtime rather than failing to compile, so keep
+  the name in `layerDefinitions:` and the expression in sync.)
 - **Storage encoding is the ordinal int**, persisted in BanyanDB / Elasticsearch / JDBC. Every
   OAP node that reads or writes a given layer must agree on its `(name, ordinal)` mapping —
   deploy a MAL file with `layerDefinitions:` identically across all nodes.
@@ -405,7 +410,7 @@ Notes:
   `LayerExtension` SPI). Conflicting registrations (same name with different ordinal, or same
   ordinal with different name) cause OAP boot to fail loudly with the offending file in the
   stack trace.
-- **Ordinals 0–49** are in active use by the OAP distribution's built-in layers; **50–999** are
+- **Ordinals 0–50** are in active use by the OAP distribution's built-in layers; **51–999** are
   reserved by convention for future built-ins. External layers should start at `>= 1000` —
   enforcement is not strict, but staying above the reserved band avoids upgrade-time collisions.
 
