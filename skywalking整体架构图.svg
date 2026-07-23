@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1050" viewBox="0 0 1560 1050" font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Segoe UI',Roboto,Arial,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 z" fill="#475569"/></marker>
+    <marker id="arrG" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 z" fill="#2f7a4f"/></marker>
+    <marker id="arrO" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 z" fill="#b5651e"/></marker>
+    <marker id="arrP" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 z" fill="#b5437a"/></marker>
+    <marker id="arrD" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 z" fill="#94a0ab"/></marker>
+    <style>
+      .h1{font-size:27px;font-weight:700;fill:#1e293b}
+      .sub{font-size:13px;fill:#64748b}
+      .ph{font-size:14.5px;font-weight:700}
+      .bt{font-size:12.5px;font-weight:700}
+      .bm{font-size:11px}
+      .bs{font-size:10px}
+      .bsi{font-size:10px;font-style:italic}
+      .ah{font-size:11px;font-weight:600;fill:#475569}
+    </style>
+  </defs>
+
+  <!-- background -->
+  <rect x="0" y="0" width="1560" height="1050" fill="#f5f8fc"/>
+
+  <!-- title -->
+  <text x="780" y="40" text-anchor="middle" class="h1">Apache SkyWalking 整体架构</text>
+  <text x="780" y="64" text-anchor="middle" class="sub">基于 oap-server 源码梳理  ·  Probes → OAP → Storage → UI  ·  gRPC :11800 / REST :12800</text>
+
+  <!-- ============ ① Probes ============ -->
+  <rect x="50" y="86" width="1460" height="104" rx="10" fill="#eaf2fb" stroke="#5b8fc9" stroke-width="1.5"/>
+  <text x="70" y="110" class="ph" fill="#1e4a78">① 探针 / 数据来源   Probes &amp; Data Sources</text>
+  <!-- G1 -->
+  <rect x="66" y="124" width="346" height="58" rx="7" fill="#ffffff" stroke="#9cc0e6"/>
+  <text x="78" y="143" class="bt" fill="#1e4a78">原生 Agent</text>
+  <text x="78" y="162" class="bm" fill="#3a5a78">Java · C# · Node.js · Go · Python · PHP</text>
+  <text x="78" y="177" class="bs" fill="#6b7c8c">自动埋点 / 手动 SDK (C++/Rust/Nginx-Lua)</text>
+  <!-- G2 -->
+  <rect x="426" y="124" width="346" height="58" rx="7" fill="#ffffff" stroke="#9cc0e6"/>
+  <text x="438" y="143" class="bt" fill="#1e4a78">Service Mesh / 网格</text>
+  <text x="438" y="162" class="bm" fill="#3a5a78">Envoy ALS · Istio 控制面</text>
+  <text x="438" y="177" class="bs" fill="#6b7c8c">mesh / mesh-dp layer</text>
+  <!-- G3 -->
+  <rect x="786" y="124" width="346" height="58" rx="7" fill="#ffffff" stroke="#9cc0e6"/>
+  <text x="798" y="143" class="bt" fill="#1e4a78">生态遥测 Ecosystem</text>
+  <text x="798" y="162" class="bm" fill="#3a5a78">OpenTelemetry · Zipkin v1/v2</text>
+  <text x="798" y="177" class="bs" fill="#6b7c8c">Prometheus · Telegraf · Zabbix</text>
+  <!-- G4 -->
+  <rect x="1146" y="124" width="348" height="58" rx="7" fill="#ffffff" stroke="#9cc0e6"/>
+  <text x="1158" y="143" class="bt" fill="#1e4a78">基础设施 / 剖析</text>
+  <text x="1158" y="162" class="bm" fill="#3a5a78">eBPF · Cilium · Process</text>
+  <text x="1158" y="177" class="bs" fill="#6b7c8c">Async Profiler · Browser · AWS Firehose</text>
+
+  <!-- arrow probes -> OAP -->
+  <line x1="381" y1="192" x2="381" y2="216" stroke="#475569" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="396" y="208" class="ah">gRPC :11800 · HTTP/REST :12800 · Kafka</text>
+
+  <!-- ============ ② OAP Server ============ -->
+  <rect x="50" y="220" width="1130" height="660" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="70" y="246" class="ph" fill="#1e293b">② OAP Server — Observability Analysis Platform</text>
+  <text x="1160" y="246" text-anchor="end" class="bsi" fill="#64748b">角色: Mixed / Receiver / Aggregator</text>
+
+  <!-- ===== Left column: Ingestion pipeline ===== -->
+  <!-- R1 Receivers -->
+  <rect x="62" y="262" width="638" height="98" rx="8" fill="#eef0fb" stroke="#8182d6"/>
+  <text x="74" y="282" class="bt" fill="#3a3b8a">Receivers / Fetchers   (推送 gRPC :11800 · REST · Zipkin :9411 · Kafka)</text>
+  <text x="74" y="302" class="bm" fill="#4a4b8a">Trace · Log · Meter · Mesh · JVM · CLR · Browser · Profile · Event · Management · OTel</text>
+  <text x="74" y="320" class="bm" fill="#4a4b8a">Zipkin · Envoy-Metrics · eBPF · Zabbix · Telegraf · Pprof · Async-Profiler · AWS-Firehose</text>
+  <text x="74" y="338" class="bs" fill="#6b6caa">Config-Discovery (下行配置)  ·  Fetchers(Pull): Kafka Fetcher · Cilium Fetcher</text>
+
+  <!-- arrow R1 -> R2 -->
+  <line x1="381" y1="360" x2="381" y2="374" stroke="#475569" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="390" y="371" class="ah">解析/分发</text>
+
+  <!-- R2 Analysis -->
+  <rect x="62" y="374" width="638" height="150" rx="8" fill="#f3edfb" stroke="#9a6fd6"/>
+  <text x="74" y="392" class="bt" fill="#5a3a8a">分析层  Analysis Engine  (Source → Dispatcher)</text>
+  <!-- miniA -->
+  <rect x="70" y="402" width="194" height="112" rx="6" fill="#ffffff" stroke="#bfa6e6"/>
+  <text x="80" y="418" class="bt" fill="#5a3a8a" font-size="10.5">Analyzers 分析器</text>
+  <text x="80" y="436" class="bs" fill="#4a3a6a">Trace / Zipkin / OTel</text>
+  <text x="80" y="450" class="bs" fill="#4a3a6a">Log (LAL)</text>
+  <text x="80" y="464" class="bs" fill="#4a3a6a">Meter (MAL)</text>
+  <text x="80" y="478" class="bs" fill="#4a3a6a">Event / Hierarchy</text>
+  <text x="80" y="492" class="bs" fill="#4a3a6a">Gen-AI</text>
+  <text x="80" y="508" class="bs" fill="#5a3a8a" font-weight="600">→ 产出 Source</text>
+  <!-- arrow A->B -->
+  <line x1="264" y1="458" x2="284" y2="458" stroke="#475569" stroke-width="1.6" marker-end="url(#arr)"/>
+  <!-- miniB -->
+  <rect x="284" y="402" width="194" height="112" rx="6" fill="#ffffff" stroke="#bfa6e6"/>
+  <text x="294" y="418" class="bt" fill="#5a3a8a" font-size="10.5">语言引擎 (代码生成)</text>
+  <text x="294" y="436" class="bs" fill="#4a3a6a">OAL (oal-rt) → 指标+Dispatcher</text>
+  <text x="294" y="450" class="bs" fill="#4a3a6a">MAL (Meter 动态指标)</text>
+  <text x="294" y="464" class="bs" fill="#4a3a6a">LAL (日志格式化/打标)</text>
+  <text x="294" y="478" class="bs" fill="#4a3a6a">MQE (查询表达式)</text>
+  <text x="294" y="498" class="bsi" fill="#7a5a9a">runtime 热更新</text>
+  <!-- arrow B->C -->
+  <line x1="478" y1="458" x2="498" y2="458" stroke="#475569" stroke-width="1.6" marker-end="url(#arr)"/>
+  <!-- miniC -->
+  <rect x="498" y="402" width="194" height="112" rx="6" fill="#ffffff" stroke="#bfa6e6"/>
+  <text x="508" y="418" class="bt" fill="#5a3a8a" font-size="10.5">Source → Dispatcher</text>
+  <text x="508" y="436" class="bs" fill="#4a3a6a">SourceReceiver.receive()</text>
+  <text x="508" y="450" class="bs" fill="#4a3a6a">DispatcherManager</text>
+  <text x="508" y="464" class="bs" fill="#4a3a6a">  .forward(source)</text>
+  <text x="508" y="482" class="bs" fill="#4a3a6a">→ StreamProcessor</text>
+  <text x="508" y="496" class="bs" fill="#4a3a6a">  .in(…)</text>
+  <text x="508" y="510" class="bsi" fill="#7a5a9a">按 scope 分发</text>
+
+  <!-- arrow R2 -> R3 -->
+  <line x1="381" y1="524" x2="381" y2="538" stroke="#475569" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- R3 Stream Processor -->
+  <rect x="62" y="538" width="638" height="110" rx="8" fill="#e8f5ec" stroke="#4f9d6b"/>
+  <text x="74" y="558" class="bt" fill="#1e5a36">流式处理内核  Stream Processing</text>
+  <text x="74" y="578" class="bm" fill="#2f6a45">数据模型: Metrics · Record · TopN · NoneStream · Management</text>
+  <text x="74" y="596" class="bm" fill="#2f6a45">Worker 链: L1 聚合(内存, 500ms) → L2 缓冲 → PersistenceTimer 批量刷盘(25s)</text>
+  <text x="74" y="614" class="bs" fill="#4a7a5a">DownSampling: Hour/Day   ·   TTL: record 3d / metrics 7d   ·   WorkerInstancesService 跨节点 L1→L2</text>
+  <text x="74" y="632" class="bsi" fill="#5a8a6a">DataKeeperExecutor 周期清理  ·  TopN 报告周期 10min</text>
+
+  <!-- ===== Right column: Query ===== -->
+  <rect x="720" y="262" width="438" height="386" rx="8" fill="#fdf0e8" stroke="#d68a4e"/>
+  <text x="732" y="284" class="bt" fill="#7a4515">查询层  Query Layer</text>
+  <text x="732" y="306" class="bm" fill="#8a5a25">• GraphQL  API   (:12800)</text>
+  <text x="732" y="326" class="bm" fill="#8a5a25">• PromQL        (:9090)</text>
+  <text x="732" y="346" class="bm" fill="#8a5a25">• LogQL         (:3100)</text>
+  <text x="732" y="366" class="bm" fill="#8a5a25">• TraceQL       (:3200)</text>
+  <text x="732" y="386" class="bm" fill="#8a5a25">• Zipkin Query  (:9412)</text>
+  <line x1="732" y1="402" x2="1146" y2="402" stroke="#e0b489" stroke-width="1"/>
+  <text x="732" y="424" class="bm" fill="#8a5a25">GraphQL Resolver → core.query.*QueryService</text>
+  <text x="732" y="444" class="bm" fill="#8a5a25">→ StorageDAO / IMetricsDAO / IRecordDAO</text>
+  <text x="732" y="464" class="bm" fill="#8a5a25">MQE 编译查询表达式 (算子/聚合)</text>
+  <text x="732" y="484" class="bm" fill="#8a5a25">拓扑 / Metadata / Aggregation 查询</text>
+  <line x1="732" y1="500" x2="1146" y2="500" stroke="#e0b489" stroke-width="1"/>
+  <text x="732" y="522" class="bs" fill="#8a5a25">多查询协议复用同一 QueryService 内核</text>
+  <text x="732" y="540" class="bsi" fill="#a87845">PromQL/LogQL/TraceQL 对外兼容生态</text>
+  <text x="732" y="560" class="bs" fill="#8a5a25">← UI (Booster) 经 GraphQL 查询</text>
+
+  <!-- ===== Cross-cutting band ===== -->
+  <rect x="210" y="664" width="800" height="88" rx="8" fill="#eef7f9" stroke="#3fa3b0"/>
+  <text x="222" y="684" class="bt" fill="#1a6a72">横切能力  Cross-cutting Services</text>
+  <text x="222" y="704" class="bm" fill="#1f7a82">Alarm 告警  ·  Exporter 导出 (gRPC :9870 / Kafka)  ·  Telemetry 自监控 (Prometheus :1234)</text>
+  <text x="222" y="722" class="bm" fill="#1f7a82">AI Pipeline  ·  Configuration Discovery 下行配置  ·  Health Checker  ·  Dynamic Config</text>
+  <text x="222" y="740" class="bsi" fill="#3a8a92">↑↓ 横切作用于 整条流水线与查询链路  ·  OAL/LAL/MAL 运行时热更新</text>
+
+  <!-- persist arrow: StreamProcessor -> Storage -->
+  <line x1="140" y1="648" x2="140" y2="886" stroke="#2f7a4f" stroke-width="2.2" marker-end="url(#arrG)"/>
+  <text x="150" y="770" class="ah" fill="#2f7a4f">持久化 persist</text>
+  <text x="150" y="786" class="bs" fill="#3a8a5a">PersistenceTimer 批量</text>
+
+  <!-- read arrow: Storage -> Query -->
+  <line x1="1080" y1="886" x2="1080" y2="648" stroke="#b5651e" stroke-width="2.2" marker-end="url(#arrO)"/>
+  <text x="1070" y="770" text-anchor="end" class="ah" fill="#b5651e">查询 read</text>
+  <text x="1070" y="786" text-anchor="end" class="bs" fill="#a0651e">StorageDAO 读取</text>
+
+  <!-- Query -> UI -->
+  <line x1="1158" y1="600" x2="1200" y2="600" stroke="#b5437a" stroke-width="2.2" marker-end="url(#arrP)"/>
+  <text x="1153" y="590" text-anchor="end" class="bs" fill="#b5437a">GraphQL :12800</text>
+
+  <!-- ============ Cluster sidebar ============ -->
+  <rect x="1200" y="220" width="310" height="320" rx="12" fill="#f1f3f6" stroke="#94a0ab"/>
+  <text x="1212" y="246" class="ph" fill="#3a4654">集群协调  Cluster</text>
+  <text x="1212" y="266" class="bsi" fill="#64748b">Coordination</text>
+  <text x="1214" y="290" class="bm" fill="#3a4654">• ZooKeeper · Kubernetes</text>
+  <text x="1214" y="310" class="bm" fill="#3a4654">• etcd · Nacos · Consul</text>
+  <text x="1214" y="330" class="bm" fill="#3a4654">• Standalone</text>
+  <line x1="1212" y1="344" x2="1498" y2="344" stroke="#c2c8d0" stroke-width="1"/>
+  <text x="1212" y="364" class="bt" fill="#3a4654">OAP 节点注册 + 远程 gRPC 转发</text>
+  <text x="1212" y="382" class="bs" fill="#5a6674">实现跨节点二级聚合 (L1 → L2)</text>
+  <text x="1212" y="398" class="bsi" fill="#7a8694">默认不引入 MQ (FAQ)</text>
+  <line x1="1212" y1="412" x2="1498" y2="412" stroke="#c2c8d0" stroke-width="1"/>
+  <text x="1212" y="432" class="bt" fill="#3a4654">动态配置 Dynamic Config</text>
+  <text x="1212" y="450" class="bs" fill="#5a6674">Apollo · gRPC-sync · ZK · etcd</text>
+  <text x="1212" y="466" class="bs" fill="#5a6674">Consul · Nacos · K8s ConfigMap</text>
+  <text x="1212" y="486" class="bsi" fill="#7a8694">OAL/LAL/MAL 规则热更新</text>
+
+  <!-- cluster <-> OAP link -->
+  <line x1="1180" y1="388" x2="1200" y2="388" stroke="#94a0ab" stroke-width="1.6" stroke-dasharray="4 3" marker-start="url(#arrD)" marker-end="url(#arrD)"/>
+  <text x="1108" y="382" class="bs" fill="#7a8694">节点注册/远程转发</text>
+
+  <!-- ============ UI sidebar ============ -->
+  <rect x="1200" y="560" width="310" height="320" rx="12" fill="#fbeaf1" stroke="#c95f93"/>
+  <text x="1212" y="586" class="ph" fill="#7a2a52">④ UI</text>
+  <text x="1212" y="606" class="bsi" fill="#8a4a6a">可视化前端</text>
+  <text x="1214" y="630" class="bm" fill="#7a2a52">• Booster UI (Web)</text>
+  <text x="1214" y="650" class="bm" fill="#7a2a52">• 桌面端 / IDE 插件</text>
+  <line x1="1212" y1="664" x2="1498" y2="664" stroke="#e0a6c0" stroke-width="1"/>
+  <text x="1214" y="686" class="bt" fill="#7a2a52">经 GraphQL API (:12800)</text>
+  <text x="1214" y="704" class="bm" fill="#8a4a6a">查询并可视化</text>
+  <line x1="1212" y1="718" x2="1498" y2="718" stroke="#e0a6c0" stroke-width="1"/>
+  <text x="1214" y="740" class="bs" fill="#8a4a6a">拓扑图 · 服务层级 Hierarchy</text>
+  <text x="1214" y="758" class="bs" fill="#8a4a6a">Trace · Log · Metrics</text>
+  <text x="1214" y="776" class="bs" fill="#8a4a6a">Profiling · 告警 · 事件</text>
+  <text x="1214" y="794" class="bs" fill="#8a4a6a">PromQL / LogQL 兼容视图</text>
+  <text x="1214" y="820" class="bsi" fill="#a85a82">高度可定制 / 可扩展</text>
+
+  <!-- ============ ③ Storage ============ -->
+  <rect x="50" y="890" width="1460" height="92" rx="10" fill="#fdf5e7" stroke="#d6a23e" stroke-width="1.5"/>
+  <text x="70" y="916" class="ph" fill="#7a5512">③ Storage — 可插拔存储   (Model / StorageDAO 抽象)</text>
+  <rect x="66" y="930" width="470" height="42" rx="7" fill="#fff8e8" stroke="#e0b870"/>
+  <text x="78" y="948" class="bt" fill="#7a5512">BanyanDB</text>
+  <text x="78" y="965" class="bs" fill="#8a6a2a">原生时序库 · Measure/Stream/Property · TraceGroup 索引</text>
+  <rect x="546" y="930" width="400" height="42" rx="7" fill="#fff8e8" stroke="#e0b870"/>
+  <text x="558" y="948" class="bt" fill="#7a5512">Elasticsearch</text>
+  <text x="558" y="965" class="bs" fill="#8a6a2a">全文检索 + 聚合索引</text>
+  <rect x="956" y="930" width="546" height="42" rx="7" fill="#fff8e8" stroke="#e0b870"/>
+  <text x="968" y="948" class="bt" fill="#7a5512">JDBC (HikariCP)</text>
+  <text x="968" y="965" class="bs" fill="#8a6a2a">H2 · MySQL · PostgreSQL · TiDB  (分表策略)</text>
+
+  <!-- footer -->
+  <text x="780" y="1006" text-anchor="middle" class="bm" fill="#64748b">模块系统: Java SPI (ModuleDefine / ModuleProvider / Service)   ·   多端口模型: gRPC :11800 / REST :12800   ·   二级聚合 L1(内存) → L2(跨节点)</text>
+  <text x="780" y="1028" text-anchor="middle" class="bs" fill="#94a3b8">Source → Dispatcher → StreamProcessor(Metrics / Record / TopN / NoneStream / Management) → Storage      ·      UI → GraphQL → Query → StorageDAO → Storage</text>
+</svg>
