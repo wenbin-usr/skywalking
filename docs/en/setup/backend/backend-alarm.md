@@ -477,6 +477,23 @@ pagerduty:
 
 You can also configure multiple integration keys.
 
+`events-api-url` is optional and defaults to the US service region endpoint, `https://events.pagerduty.com/v2/enqueue`.
+If your PagerDuty account is in the EU service region, set it to the EU endpoint so that alarms are delivered directly
+instead of being forwarded through the US region:
+
+```yml
+pagerduty:
+  default:
+    is-default: true
+    text-template: "Apache SkyWalking Alarm: \n %s."
+    events-api-url: https://events.eu.pagerduty.com/v2/enqueue
+    integration-keys:
+    - dummy-integration-key
+```
+
+The integration key is sent in the request body, so this endpoint should always use `https`. OAP logs a warning at
+startup if a non-`https` URL is configured.
+
 ### Discord
 Follow the [Discord Webhooks guide](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks) and create a new webhook.
 
@@ -491,6 +508,22 @@ discord:
     - url: https://discordapp.com/api/webhooks/1008166889777414645/8e0Am4Zb-YGbBqqbiiq0jSHPTEEaHa4j1vIC-zSSm231T8ewGxgY0_XUYpY-k1nN4HBl
       username: robot
 ```
+
+### HTTP delivery timeout
+Every HTTP-based hook (Webhook, Slack, WeChat, DingTalk, Feishu, WeLink, PagerDuty and Discord) bounds each HTTP request
+it sends by one deadline, covering connecting, waiting for the response and reading the response body. A hook that sends
+more than one request for an alarm gets the full deadline for each of them, for example WeLink fetching its access token
+before sending the message. The gRPC hook does not use it.
+
+The deadline is set in `config/application.yml`, not in `alarm-settings.yml`, so it does not change dynamically:
+
+```yaml
+alarm:
+  default:
+    httpTimeout: ${SW_ALARM_HTTP_TIMEOUT:12} # seconds
+```
+
+The default is `12` seconds. Values `<= 0` fall back to `12`.
 
 ## Update the settings dynamically
 Since 6.5.0, the alerting settings can be updated dynamically at runtime by [Dynamic Configuration](dynamic-config.md),

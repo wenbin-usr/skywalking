@@ -20,16 +20,34 @@ package org.apache.skywalking.oap.server.receiver.otel.otlp;
 import io.opentelemetry.proto.common.v1.AnyValue;
 import io.opentelemetry.proto.common.v1.KeyValue;
 import io.opentelemetry.proto.trace.v1.Span;
+import java.util.Map;
 import org.apache.skywalking.oap.server.core.trace.OTLPSpanReader;
 
 /**
  * {@link OTLPSpanReader} implementation wrapping the real OTLP {@link Span} proto.
  */
 public class OTLPSpanReaderImpl implements OTLPSpanReader {
+
     private final Span span;
+    private Map<String, String> attributes;
 
     public OTLPSpanReaderImpl(final Span span) {
         this.span = span;
+    }
+
+    @Override
+    public String traceId() {
+        return OTLPValues.hexId(span.getTraceId());
+    }
+
+    @Override
+    public String spanId() {
+        return OTLPValues.hexId(span.getSpanId());
+    }
+
+    @Override
+    public String parentSpanId() {
+        return OTLPValues.hexId(span.getParentSpanId());
     }
 
     @Override
@@ -40,6 +58,11 @@ public class OTLPSpanReaderImpl implements OTLPSpanReader {
     @Override
     public String spanKind() {
         return span.getKind().name();
+    }
+
+    @Override
+    public String statusCode() {
+        return span.getStatus().getCode().name();
     }
 
     @Override
@@ -62,6 +85,21 @@ public class OTLPSpanReaderImpl implements OTLPSpanReader {
         return "";
     }
 
+    /**
+     * Built on first use and reused: listeners that read many attributes pay one pass over the list.
+     */
+    @Override
+    public Map<String, String> attributes() {
+        if (attributes == null) {
+            attributes = OTLPValues.toStringMap(span.getAttributesList());
+        }
+        return attributes;
+    }
+
+    /**
+     * Scalars only, the historical contract of {@link #getAttribute(String)}: arrays, key-value lists and bytes
+     * read as empty here and as text through {@link #attributes()}.
+     */
     private static String convertValue(final AnyValue value) {
         if (value.hasStringValue()) {
             return value.getStringValue();

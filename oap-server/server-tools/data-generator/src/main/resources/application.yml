@@ -184,6 +184,25 @@ event-analyzer:
   selector: ${SW_EVENT_ANALYZER:default}
   default:
 
+# The GraphQL query module requires the AI agent conversation module.
+ai-agent-conversation:
+  selector: ${SW_AI_AGENT_CONVERSATION:default}
+  default:
+    # The most rounds one conversation list reads. It counts rounds, not conversations, so a busy
+    # conversation spends the budget of the quiet ones.
+    conversationListMaxLimit: ${SW_AI_AGENT_CONVERSATION_LIST_MAX_LIMIT:10000}
+    # How long one conversation view request may take, in seconds; the whole chain is folded before the first byte.
+    viewRequestTimeout: ${SW_AI_AGENT_CONVERSATION_VIEW_REQUEST_TIMEOUT:120}
+    # How many files or rounds one storage query fetches; a conversation is read batch by batch.
+    readWindow: ${SW_AI_AGENT_CONVERSATION_READ_WINDOW:16}
+    # The most bytes one storage query may answer with. BanyanDB alone accepts it, raising its client's
+    # 50 MB per-call cap for this module; Elasticsearch and JDBC bound a read by hits and by rows. With hide
+    # set, it also bounds what rebuilding one request body holds at once.
+    maxResponseBytes: ${SW_AI_AGENT_CONVERSATION_MAX_RESPONSE_BYTES:104857600}
+    hide: ${SW_AI_AGENT_CONVERSATION_HIDE:}
+    # The largest file stored; a larger one is rejected at ingest, under BanyanDB's 16 MiB message limit.
+    maxFileBytes: ${SW_AI_AGENT_CONVERSATION_MAX_FILE_BYTES:15728640}
+
 query:
   selector: ${SW_QUERY:graphql}
   graphql:
@@ -203,6 +222,9 @@ query:
 alarm:
   selector: ${SW_ALARM:default}
   default:
+    # Deadline (seconds) of each HTTP request an HTTP-based alarm hook (every hook except gRPC) sends,
+    # covering connecting, waiting for the response and reading the response body. Values <= 0 fall back to 12.
+    httpTimeout: ${SW_ALARM_HTTP_TIMEOUT:12}
 
 telemetry:
   selector: ${SW_TELEMETRY:none}

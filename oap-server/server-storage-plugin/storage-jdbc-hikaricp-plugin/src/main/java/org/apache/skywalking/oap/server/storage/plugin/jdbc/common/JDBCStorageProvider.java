@@ -48,6 +48,8 @@ import org.apache.skywalking.oap.server.core.storage.query.IAggregationQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IAlarmQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IBrowserLogQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IEventQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IAIAgentConversationQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IGenAIEvaluationRecordQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IHierarchyQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ILogQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IMetadataQueryDAO;
@@ -57,6 +59,7 @@ import org.apache.skywalking.oap.server.core.storage.query.ISpanAttachedEventQue
 import org.apache.skywalking.oap.server.core.storage.query.ITagAutoCompleteQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ITopologyQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ITraceQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IOTLPTraceQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IZipkinQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.ttl.DefaultStorageTTLStatusQuery;
 import org.apache.skywalking.oap.server.core.storage.ttl.StorageTTLStatusQuery;
@@ -79,6 +82,8 @@ import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCEBPFP
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCEBPFProfilingScheduleDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCEBPFProfilingTaskDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCEventQueryDAO;
+import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCAIAgentConversationQueryDAO;
+import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCGenAIEvaluationRecordQueryDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCHierarchyQueryDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCHistoryDeleteDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCJFRDataQueryDAO;
@@ -98,6 +103,7 @@ import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCTopol
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCTraceQueryDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCRuntimeRuleManagementDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCUITemplateManagementDAO;
+import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCOTLPTraceQueryDAO;
 import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.dao.JDBCZipkinQueryDAO;
 import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
 import org.apache.skywalking.oap.server.telemetry.api.HealthCheckMetrics;
@@ -198,6 +204,12 @@ public abstract class JDBCStorageProvider extends ModuleProvider {
         this.registerServiceImplementation(
             ILogQueryDAO.class,
             new JDBCLogQueryDAO(jdbcClient, getManager(), tableHelper));
+        this.registerServiceImplementation(
+            IGenAIEvaluationRecordQueryDAO.class,
+            new JDBCGenAIEvaluationRecordQueryDAO(jdbcClient, tableHelper));
+        this.registerServiceImplementation(
+            IAIAgentConversationQueryDAO.class,
+            new JDBCAIAgentConversationQueryDAO(jdbcClient, tableHelper));
 
         this.registerServiceImplementation(
             IProfileTaskQueryDAO.class,
@@ -246,6 +258,10 @@ public abstract class JDBCStorageProvider extends ModuleProvider {
         this.registerServiceImplementation(
             IZipkinQueryDAO.class,
             new JDBCZipkinQueryDAO(jdbcClient, tableHelper)
+        );
+        this.registerServiceImplementation(
+            IOTLPTraceQueryDAO.class,
+            new JDBCOTLPTraceQueryDAO(jdbcClient, tableHelper)
         );
         this.registerServiceImplementation(
             ISpanAttachedEventQueryDAO.class,

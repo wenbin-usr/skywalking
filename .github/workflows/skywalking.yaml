@@ -35,7 +35,7 @@ jobs:
   license-header:
     if: (github.event_name == 'schedule' && github.repository == 'apache/skywalking') || (github.event_name != 'schedule')
     name: License header
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -48,7 +48,7 @@ jobs:
   code-style:
     if: (github.event_name == 'schedule' && github.repository == 'apache/skywalking') || (github.event_name != 'schedule')
     name: Code style
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -64,7 +64,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.pom == 'true')
     name: Dependency licenses
     needs: [changes]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -95,7 +95,7 @@ jobs:
     if: ( always() && ! cancelled() ) && (github.event_name == 'schedule' && github.repository == 'apache/skywalking') || (github.event_name != 'schedule')
     name: Sanity check results
     needs: [license-header, code-style, dependency-license]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check results
@@ -107,7 +107,7 @@ jobs:
   changes:
     # Check if anything related to Actual code / CI(functional testing) is changed
     # set outputs for other jobs to access for if conditions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # To prevent error when there's no base branch
     if: github.event_name != 'schedule'
     timeout-minutes: 10
@@ -122,7 +122,7 @@ jobs:
           persist-credentials: false
       - name: Filter
         id: filter
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           list-files: 'shell'
           predicate-quantifier: 'every'
@@ -159,7 +159,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: Build dist tar
     needs: [changes]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -191,7 +191,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: Docker images
     needs: [sanity-check, dist-tar, changes]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       matrix:
@@ -233,14 +233,14 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-24.04, macos-26, windows-latest]
         java-version: [11]
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             java-version: 17
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             java-version: 21
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             java-version: 25
     steps:
       - uses: actions/checkout@v6
@@ -266,7 +266,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: Integration test
     needs: [sanity-check, changes]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       matrix:
@@ -301,7 +301,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: Slow Integration Tests
     needs: [sanity-check, changes]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       matrix:
@@ -334,7 +334,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: ${{ matrix.test.name }}
     needs: [docker, dist-tar]
-    runs-on: ${{ matrix.test.runs-on || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.test.runs-on || 'ubuntu-24.04' }}
     timeout-minutes: 60
     env:
       OTEL_COLLECTOR_VERSION: 0.102.1
@@ -368,8 +368,31 @@ jobs:
             config: test/e2e-v2/cases/storage/banyandb/e2e.yaml
           - name: BanyanDB TLS
             config: test/e2e-v2/cases/storage/banyandb/tls/e2e.yaml
+          - name: BanyanDB Auth Rotation
+            config: test/e2e-v2/cases/storage/banyandb/auth-rotation/e2e.yaml
+          - name: BanyanDB CA Rotation
+            config: test/e2e-v2/cases/storage/banyandb/ca-rotation/e2e.yaml
+          # Trace retention pipeline. Each pair is a controlled drop/keep experiment on one
+          # schema: identical data and thresholds, differing only by a keepTagRules entry, so
+          # a regression in either direction is attributable. They need the BanyanDB
+          # "-plugins" host and "-plugins-carrier" images, which are published only for the
+          # SW_BANYANDB_COMMIT pinned in test/e2e-v2/script/env.
+          - name: BanyanDB Trace Pipeline SW
+            config: test/e2e-v2/cases/storage/banyandb/pipeline-plugin/sw/e2e.yaml
+          - name: BanyanDB Trace Pipeline SW Keep
+            config: test/e2e-v2/cases/storage/banyandb/pipeline-plugin/sw-keep/e2e.yaml
+          - name: BanyanDB Trace Pipeline Zipkin
+            config: test/e2e-v2/cases/storage/banyandb/pipeline-plugin/zipkin/e2e.yaml
+          - name: BanyanDB Trace Pipeline Zipkin Keep
+            config: test/e2e-v2/cases/storage/banyandb/pipeline-plugin/zipkin-keep/e2e.yaml
           - name: BanyanDB monitoring
             config: test/e2e-v2/cases/banyandb/e2e.yaml
+          # The meter_banyandb_trace_sampling_* rules, which the case above cannot cover: its
+          # cluster runs no sampler plugins, so the wire families never register. Needs the
+          # BanyanDB "-plugins" host and "-plugins-carrier" images, published only for the
+          # SW_BANYANDB_COMMIT pinned in test/e2e-v2/script/env.
+          - name: BanyanDB trace sampling monitoring
+            config: test/e2e-v2/cases/banyandb/trace-sampling/e2e.yaml
           - name: Storage MySQL
             config: test/e2e-v2/cases/storage/mysql/e2e.yaml
           - name: Storage PostgreSQL
@@ -377,6 +400,9 @@ jobs:
           - name: Storage ES 8.18.8
             config: test/e2e-v2/cases/storage/es/e2e.yaml
             env: ES_VERSION=8.18.8
+          - name: Storage ES 9.3.0
+            config: test/e2e-v2/cases/storage/es/e2e.yaml
+            env: ES_VERSION=9.3.0
           - name: Storage OpenSearch 2.4.0
             config: test/e2e-v2/cases/storage/opensearch/e2e.yaml
             env: OPENSEARCH_VERSION=2.4.0
@@ -410,6 +436,8 @@ jobs:
           - name: Runtime Rule Cluster (kind)
             config: test/e2e-v2/cases/runtime-rule/cluster/e2e.yaml
             runs-on: ubuntu-24.04
+          - name: Runtime Rule Meter Hot-Update
+            config: test/e2e-v2/cases/runtime-rule/meter/e2e.yaml
           - name: DSL Debug API — MAL
             config: test/e2e-v2/cases/dsl-debugging/mal/e2e.yaml
           - name: DSL Debug API — OAL
@@ -460,6 +488,15 @@ jobs:
             env: ES_VERSION=8.18.8
           - name: Log BanyanDB
             config: test/e2e-v2/cases/log/banyandb/e2e.yaml
+          - name: AI Agent Conversations BanyanDB
+            config: test/e2e-v2/cases/ai-agent/banyandb/e2e.yaml
+          - name: AI Agent Conversations ES 8.18.8
+            config: test/e2e-v2/cases/ai-agent/es/e2e.yaml
+            env: ES_VERSION=8.18.8
+          - name: AI Agent Conversations MySQL
+            config: test/e2e-v2/cases/ai-agent/mysql/e2e.yaml
+          - name: AI Agent Conversations Postgres
+            config: test/e2e-v2/cases/ai-agent/postgres/e2e.yaml
 
           - name: Log FluentBit ES 8.18.8
             config: test/e2e-v2/cases/log/fluent-bit/e2e.yaml
@@ -636,6 +673,9 @@ jobs:
             config: test/e2e-v2/cases/vm/zabbix/e2e.yaml
           - name: VM Prometheus
             config: test/e2e-v2/cases/vm/prometheus-node-exporter/e2e.yaml
+          - name: VM OpenTelemetry Hostmetrics
+            config: test/e2e-v2/cases/vm/otel-hostmetrics/e2e.yaml
+            env: OTEL_COLLECTOR_CONTRIB_VERSION=0.158.0
           - name: VM Telegraf
             config: test/e2e-v2/cases/vm/telegraf/e2e.yaml
           - name: So11y
@@ -663,8 +703,12 @@ jobs:
             config: test/e2e-v2/cases/virtual-genai/e2e.yaml
           - name: OTLP Virtual GenAI
             config: test/e2e-v2/cases/otlp-virtual-genai/e2e.yaml
+          - name: OTLP Virtual GenAI Native
+            config: test/e2e-v2/cases/otlp-virtual-genai/native/e2e.yaml
           - name: Zipkin Virtual GenAI
             config: test/e2e-v2/cases/zipkin-virtual-genai/e2e.yaml
+          - name: Mixed Virtual GenAI
+            config: test/e2e-v2/cases/mixed-virtual-genai/e2e.yaml
           - name: iOS Monitoring
             config: test/e2e-v2/cases/ios/e2e.yaml
           - name: WeChat Mini Program Monitoring
@@ -729,6 +773,12 @@ jobs:
 
           - name: OTLP Trace
             config: test/e2e-v2/cases/otlp-traces/e2e.yaml
+          - name: OTLP Trace Native BanyanDB
+            config: test/e2e-v2/cases/otlp-traces/native/banyandb/e2e.yaml
+          - name: OTLP Trace Native ES
+            config: test/e2e-v2/cases/otlp-traces/native/es/e2e.yaml
+          - name: OTLP Trace Native MySQL
+            config: test/e2e-v2/cases/otlp-traces/native/mysql/e2e.yaml
 
           - name: UI Management BanyanDB
             config: test/e2e-v2/cases/ui-management/banyandb/e2e.yaml
@@ -773,11 +823,17 @@ jobs:
           name: dist
           path: dist
       - name: Login to ghcr
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The virtual-genai case builds e2e-spring-ai-service, which needs Java 17. Without this
+      # the job silently rides whatever JDK the runner image defaults to.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
       - name: Cache maven repository
         uses: actions/cache@v4
         with:
@@ -877,7 +933,7 @@ jobs:
           find docker-images -name "*.tar" -exec docker load -i {} \;
           find docker-images -name "*.tar" -exec rm {} \;
       - name: Login to ghcr
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -949,7 +1005,7 @@ jobs:
           find docker-images -name "*.tar" -exec docker load -i {} \;
           find docker-images -name "*.tar" -exec rm {} \;
       - name: Login to ghcr
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -981,7 +1037,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: Java ${{ matrix.java-version }}
     needs: [docker]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -1031,7 +1087,7 @@ jobs:
       ((github.event_name == 'schedule' && github.repository == 'apache/skywalking') || needs.changes.outputs.oap == 'true')
     name: ${{ matrix.test.name }}
     needs: [docker, dist-tar]
-    runs-on: ${{ matrix.test.runs-on || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.test.runs-on || 'ubuntu-24.04' }}
     timeout-minutes: 60
     env:
       BANYANDB_DATA_GENERATE_ROOT: test/e2e-v2/cases/storage/banyandb/data-generate
@@ -1065,7 +1121,7 @@ jobs:
           name: dist
           path: dist
       - name: Login to ghcr
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1158,7 +1214,7 @@ jobs:
       - e2e-test-istio
       - e2e-test-istio-ambient
       - e2e-test-java-versions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Merge Requirement

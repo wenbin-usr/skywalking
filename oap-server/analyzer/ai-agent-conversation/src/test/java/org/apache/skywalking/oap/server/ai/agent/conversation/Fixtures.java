@@ -1,0 +1,246 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.apache.skywalking.oap.server.ai.agent.conversation;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.TreeMap;
+import org.apache.skywalking.oap.server.ai.agent.conversation.format.Digests;
+import org.apache.skywalking.oap.server.ai.agent.conversation.format.SessionDataFile;
+import org.apache.skywalking.oap.server.ai.agent.conversation.format.SessionFlowRound;
+
+/**
+ * The Sessionizer's fixture scenario <code>tests/scenarios/fixture.yaml</code>, built with
+ * <code>asz scenario build --format sd --at 2026-01-01T00:00:00Z</code> and parsed: four Session Data files, one of
+ * them the change record the plugin wrote for the build, and one round, byte for byte as the Sessionizer wrote
+ * them, so every digest is real, and the <code>asz.view</code> document <code>asz conversation -json</code> printed
+ * for them, which is the document the OAP must equal.
+ *
+ * <p>Under <code>workspace-changes/</code>, the same for <code>tests/scenarios/workspace-changes.yaml</code>, which
+ * exercises every producer of a change record: a shell command the plugin observed on the main stream, an
+ * <code>Edit</code> whose patch the runtime recorded on its own result, and a shell command inside a subagent.
+ *
+ * <p>Under <code>provider-bodies/</code>, the same for <code>tests/scenarios/provider-bodies.yaml</code>: a session
+ * with a subagent whose calls' request and response bodies landed in one <code>provider_body</code> file. Under
+ * <code>provider-bodies-errors/</code>, the same for <code>tests/scenarios/provider-bodies-errors.yaml</code>: an API
+ * error the runtime wrote as a synthetic call, between two calls it did send.
+ *
+ * <p>Under <code>mcp-calls/</code>, the same for <code>tests/scenarios/mcp-calls.yaml</code>: calls to MCP servers on
+ * the main stream and in a subagent, each with the execution record the plugin wrote after it in an
+ * <code>execution</code> file of its stream, one of them written twice.
+ *
+ * <p>Under <code>langchain-subagent/</code>, one LangChain conversation as the Sessionizer lands it from what a real
+ * LangSmith client sent, its <code>subagent</code> capture, parsed: a main stream, a nested agent's child stream, and
+ * an auxiliary stream that summarises, with the provider bodies of every call. The landed files are an earlier
+ * Sessionizer's, from an earlier recording of that capture; the round is the current Sessionizer's, parsed from them.
+ *
+ * <p>Under <code>prompt-snapshot-withheld/</code>, the same for <code>tests/scenarios/prompt-snapshot-withheld.yaml</code>:
+ * the records that carry what the runtime sent the model, named <code>system_prompt</code> and <code>tool_schemas</code>,
+ * two of them written twice as a runtime replays them before a reset, a child agent whose talk has no input of its own,
+ * and the provider bodies of every call. Beside the whole document, <code>asz-view-withheld-&lt;names&gt;.json</code> is
+ * what <code>asz view</code> serves for the same files with <code>?hide=&lt;names&gt;</code>, which the withheld document
+ * the OAP builds is compared with. The same three are under <code>provider-bodies/</code>, where no record is named.
+ *
+ * <p>Under <code>input-withheld/</code>, the same scenario with the person's input named <code>system_prompt</code>
+ * too, as the LangChain adapter names a first input that holds a system message: <code>"system_prompt"</code> added to
+ * the flags of row 1 of the main transcript and its closing line computed again, then indexed, parsed and verified by
+ * the Sessionizer, which printed the whole document and served the three withheld ones. No scenario can name an input,
+ * so the file is edited; everything else is the Sessionizer's own output.
+ */
+public final class Fixtures {
+    public static final String SESSION = "00000001-0000-4000-8000-000000000001";
+    public static final String[] DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "changes-20260101T000000.000000000Z-000002.sd",
+        "transcript-20260101T000000.000000000Z-000003.sd",
+        "meta-20260101T000000.000000000Z-000004.sd",
+    };
+    public static final String CHILD_STREAM = "a0a10ef0666c4dc7e";
+    public static final String ROUND_FILE = "r000001-58f95b7fc54f.sf";
+    public static final String VIEW_EXAMPLE_JSON = "asz-view-example.json";
+
+    public static final String WORKSPACE_CHANGES_DIR = "workspace-changes/";
+    public static final String WORKSPACE_CHANGES_SESSION = "3189c1f0-9ec4-4bd2-88dc-8eda88ac6db3";
+    public static final String[] WORKSPACE_CHANGES_DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "changes-20260101T000000.000000000Z-000002.sd",
+        "transcript-20260101T000000.000000000Z-000003.sd",
+        "changes-20260101T000000.000000000Z-000004.sd",
+        "meta-20260101T000000.000000000Z-000005.sd",
+    };
+    public static final String WORKSPACE_CHANGES_ROUND_FILE = "r000001-a0076e9f9c3b.sf";
+
+    public static final String PROVIDER_BODIES_DIR = "provider-bodies/";
+    public static final String PROVIDER_BODIES_SESSION = "6b7a6063-8714-4f6b-87cd-6c2da3a5094d";
+    public static final String[] PROVIDER_BODIES_DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "transcript-20260101T000000.000000000Z-000002.sd",
+        "meta-20260101T000000.000000000Z-000003.sd",
+        "provider_body-20260101T000000.000000000Z-000004.sd",
+    };
+    public static final String PROVIDER_BODIES_ROUND_FILE = "r000001-30c2e12219c0.sf";
+
+    public static final String PROVIDER_BODIES_ERRORS_DIR = "provider-bodies-errors/";
+    public static final String[] PROVIDER_BODIES_ERRORS_DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "provider_body-20260101T000000.000000000Z-000002.sd",
+    };
+    public static final String PROVIDER_BODIES_ERRORS_ROUND_FILE = "r000001-2e9a9e0b87b2.sf";
+
+    public static final String MCP_CALLS_DIR = "mcp-calls/";
+    public static final String[] MCP_CALLS_DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "execution-20260101T000000.000000000Z-000002.sd",
+        "transcript-20260101T000000.000000000Z-000003.sd",
+        "execution-20260101T000000.000000000Z-000004.sd",
+        "meta-20260101T000000.000000000Z-000005.sd",
+    };
+    public static final String MCP_CALLS_ROUND_FILE = "r000001-2053bd8e2eca.sf";
+
+    public static final String LANGCHAIN_SUBAGENT_DIR = "langchain-subagent/";
+    public static final String[] LANGCHAIN_SUBAGENT_DATA_FILES = {
+        "transcript-20260920T110158.000000000Z-000001.sd",
+        "transcript-20260920T110158.000000000Z-000002.sd",
+        "transcript-20260920T110158.000000000Z-000003.sd",
+        "provider_body-20260920T110158.000000000Z-000004.sd",
+    };
+    public static final String LANGCHAIN_SUBAGENT_ROUND_FILE = "r000001-90fcf565d8f9.sf";
+
+    /**
+     * The Sessionizer's history-forget scenario: an application trims the history it sends, so the last call's history
+     * changed and a history.change card stands before it.
+     */
+    public static final String HISTORY_FORGET_DIR = "history-forget/";
+    public static final String[] HISTORY_FORGET_DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "provider_body-20260101T000000.000000000Z-000002.sd",
+    };
+    public static final String HISTORY_FORGET_ROUND_FILE = "r000001-9511df04f75c.sf";
+
+    public static final String PROMPT_SNAPSHOT_WITHHELD_DIR = "prompt-snapshot-withheld/";
+    public static final String PROMPT_SNAPSHOT_WITHHELD_SESSION = "5499bcd9-30f3-4748-8723-1a9b615f93c9";
+    public static final String[] PROMPT_SNAPSHOT_WITHHELD_DATA_FILES = {
+        "transcript-20260101T000000.000000000Z-000001.sd",
+        "transcript-20260101T000000.000000000Z-000002.sd",
+        "meta-20260101T000000.000000000Z-000003.sd",
+        "provider_body-20260101T000000.000000000Z-000004.sd",
+    };
+    public static final String PROMPT_SNAPSHOT_WITHHELD_ROUND_FILE = "r000001-bbc6bc7257ea.sf";
+
+    public static final String INPUT_WITHHELD_DIR = "input-withheld/";
+    public static final String INPUT_WITHHELD_ROUND_FILE = "r000001-9841b6d6c9c0.sf";
+
+    private Fixtures() {
+    }
+
+    /**
+     * @param names the names withheld, joined by <code>+</code>, as the file is named
+     * @return the name of the document <code>asz view</code> serves for the fixture with those names withheld
+     */
+    public static String viewWithheld(final String names) {
+        return "asz-view-withheld-" + names + ".json";
+    }
+
+    public static byte[] bytes(final String name) throws IOException {
+        try (InputStream in = Fixtures.class.getResourceAsStream("/fixtures/" + name)) {
+            if (in == null) {
+                throw new IOException("no fixture " + name);
+            }
+            return in.readAllBytes();
+        }
+    }
+
+    public static Map<Long, SessionDataFile> dataFiles() throws IOException {
+        return dataFiles("", DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> workspaceChangesDataFiles() throws IOException {
+        return dataFiles(WORKSPACE_CHANGES_DIR, WORKSPACE_CHANGES_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> providerBodiesDataFiles() throws IOException {
+        return dataFiles(PROVIDER_BODIES_DIR, PROVIDER_BODIES_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> providerBodiesErrorsDataFiles() throws IOException {
+        return dataFiles(PROVIDER_BODIES_ERRORS_DIR, PROVIDER_BODIES_ERRORS_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> mcpCallsDataFiles() throws IOException {
+        return dataFiles(MCP_CALLS_DIR, MCP_CALLS_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> langchainSubagentDataFiles() throws IOException {
+        return dataFiles(LANGCHAIN_SUBAGENT_DIR, LANGCHAIN_SUBAGENT_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> historyForgetDataFiles() throws IOException {
+        return dataFiles(HISTORY_FORGET_DIR, HISTORY_FORGET_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> promptSnapshotWithheldDataFiles() throws IOException {
+        return dataFiles(PROMPT_SNAPSHOT_WITHHELD_DIR, PROMPT_SNAPSHOT_WITHHELD_DATA_FILES);
+    }
+
+    public static Map<Long, SessionDataFile> inputWithheldDataFiles() throws IOException {
+        return dataFiles(INPUT_WITHHELD_DIR, PROMPT_SNAPSHOT_WITHHELD_DATA_FILES);
+    }
+
+    private static Map<Long, SessionDataFile> dataFiles(final String dir, final String[] names) throws IOException {
+        final Map<Long, SessionDataFile> out = new TreeMap<>();
+        for (final String name : names) {
+            final SessionDataFile f = SessionDataFile.parse(bytes(dir + name));
+            out.put(f.getHeader().getSeq(), f);
+        }
+        return out;
+    }
+
+    public static SessionFlowRound round() throws IOException {
+        return SessionFlowRound.parse(bytes(ROUND_FILE));
+    }
+
+    /**
+     * A round with no entities of its own, signed like a real one: it continues the fixture's conversation, session
+     * and policy under the parser given, names the previous digest given, or none for round 1, and claims the seq
+     * window given. For chain tests that need a round the fixture set does not hold.
+     *
+     * @param like       the round whose conversation, session and policy are kept
+     * @param round      the round number
+     * @param previous   the previous round's commit digest, or null for round 1
+     * @param fromSeq    the first seq of the window
+     * @param throughSeq the last seq of the window
+     * @param parser     the parser version the header names
+     * @return the round's bytes
+     */
+    public static byte[] emptyRound(final SessionFlowRound like, final long round, final String previous,
+                                    final long fromSeq, final long throughSeq, final String parser) {
+        final SessionFlowRound.Header h = like.getHeader();
+        final String header = "{\"t\":\"header\",\"schema\":\"sf/1\",\"conversation\":\"" + h.getConversation()
+            + "\",\"session\":\"" + h.getSession() + "\",\"round\":" + round
+            + (previous == null ? "" : ",\"previous\":\"" + previous + "\"")
+            + ",\"from_seq\":" + fromSeq + ",\"through_seq\":" + throughSeq
+            + ",\"input_digest\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+            + ",\"parser\":\"" + parser + "\",\"policy\":\"" + h.getPolicy() + "\"}";
+        final String commit = "{\"t\":\"commit\",\"digest\":\""
+            + Digests.sha256Hex((header + "\n").getBytes(StandardCharsets.UTF_8)) + "\"}";
+        return (header + "\n" + commit + "\n").getBytes(StandardCharsets.UTF_8);
+    }
+}

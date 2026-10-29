@@ -53,8 +53,8 @@ import org.apache.skywalking.oap.server.core.storage.query.IMetricsQueryDAO;
 import org.apache.skywalking.oap.server.library.client.elasticsearch.ElasticSearchClient;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.EsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.IndexController;
-import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.TimeRangeIndexNameGenerator;
-import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.TimeSeriesUtils;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.IndexFamily;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.IndexNames;
 
 public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
 
@@ -78,7 +78,7 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
         }
         final String realValueColumn = IndexController.LogicIndicesRegister.getPhysicalColumnName(condition.getName(), valueColumnName);
         final boolean mergedTable = IndexController.LogicIndicesRegister.isMergedTable(condition.getName());
-        final String tableName = IndexController.LogicIndicesRegister.getPhysicalTableName(condition.getName());
+        final IndexFamily family = IndexFamily.of(condition.getName());
         final List<PointOfTime> pointOfTimes = duration.assembleDurationPoints();
         Map<String, List<String>> indexIdsGroup = new HashMap<>();
 
@@ -87,8 +87,7 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
             if (mergedTable) {
                 id = IndexController.INSTANCE.generateDocId(condition.getName(), id);
             }
-            String indexName = TimeSeriesUtils.queryIndexName(
-                tableName, pointOfTime.getPoint(), duration.getStep(), false, false);
+            String indexName = IndexNames.pointIndex(family, pointOfTime.getPoint(), duration.getStep());
             indexIdsGroup.computeIfAbsent(indexName, v -> new ArrayList<>()).add(id);
             return id;
         }).collect(Collectors.toList());
@@ -140,10 +139,10 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
         }
         final String realValueColumn = IndexController.LogicIndicesRegister.getPhysicalColumnName(condition.getName(), valueColumnName);
         final List<PointOfTime> pointOfTimes = duration.assembleDurationPoints();
-        final String tableName = IndexController.LogicIndicesRegister.getPhysicalTableName(condition.getName());
+        final IndexFamily family = IndexFamily.of(condition.getName());
         Map<String, List<String>> indexIdsGroup = new HashMap<>();
 
-        boolean aggregationMode = !tableName.equals(condition.getName());
+        boolean aggregationMode = !family.getPhysicalName().equals(condition.getName());
         List<String> ids = new ArrayList<>(pointOfTimes.size());
         pointOfTimes.forEach(pointOfTime -> {
             String id = pointOfTime.id(condition.getEntity().buildId());
@@ -151,8 +150,7 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
                 id = IndexController.INSTANCE.generateDocId(condition.getName(), id);
             }
             ids.add(id);
-            String indexName = TimeSeriesUtils.queryIndexName(
-                tableName, pointOfTime.getPoint(), duration.getStep(), false, false);
+            String indexName = IndexNames.pointIndex(family, pointOfTime.getPoint(), duration.getStep());
             indexIdsGroup.computeIfAbsent(indexName, v -> new ArrayList<>()).add(id);
         });
 
@@ -191,10 +189,8 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
             ));
             search.query(query);
         }
-        final SearchResponse response = getClient().search(new TimeRangeIndexNameGenerator(
-            IndexController.LogicIndicesRegister.getPhysicalTableName(metricName),
-            duration.getStartTimeBucketInSec(),
-            duration.getEndTimeBucketInSec()), search.build());
+        final SearchResponse response = getClient().search(
+            IndexNames.rangeIndices(IndexFamily.of(metricName), duration), search.build());
         final String realValueColumn = IndexController.LogicIndicesRegister.getPhysicalColumnName(metricName, valueColumnName);
         final List<PointOfTime> pointOfTimes = duration.assembleDurationPoints();
         Map<String, DataTable> idMap = new HashMap<>();
@@ -224,7 +220,7 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
         // valueType != null signals a foreign metric (not defined on this OAP). The value column
         // is unused by ES entity enumeration; only the physical index + discriminator differ.
         final boolean foreign = valueType != null;
-        final String physicalIndex;
+        final IndexFamily family;
         final boolean filterByDiscriminator;
         if (foreign) {
             // Resolve from running config, not the local registry. In the default merged mode
@@ -237,10 +233,10 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
                         + "physical index is derived from the metric's stream class, which this OAP "
                         + "does not have for " + metricName);
             }
-            physicalIndex = IndexController.METRICS_LOGIC_TABLE_NAME;
+            family = IndexFamily.FOREIGN_METRICS;
             filterByDiscriminator = true;
         } else {
-            physicalIndex = IndexController.LogicIndicesRegister.getPhysicalTableName(metricName);
+            family = IndexFamily.of(metricName);
             filterByDiscriminator = IndexController.LogicIndicesRegister.isMergedTable(metricName);
         }
         final SearchBuilder search = Search.builder().size(limit);
@@ -258,10 +254,7 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
             ));
         }
         search.query(query);
-        final SearchResponse response = getClient().search(new TimeRangeIndexNameGenerator(
-            physicalIndex,
-            duration.getStartTimeBucketInSec(),
-            duration.getEndTimeBucketInSec()), search.build());
+        final SearchResponse response = getClient().search(IndexNames.rangeIndices(family, duration), search.build());
         // Top-N hits across the time range, dedup client-side on entity_id. LinkedHashSet
         // preserves the time_bucket-DESC ordering ES returned.
         final LinkedHashSet<String> entityIds = new LinkedHashSet<>();
@@ -280,11 +273,10 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
                                final Duration duration) {
         final String realValueColumn = IndexController.LogicIndicesRegister.getPhysicalColumnName(condition.getName(), valueColumnName);
         final List<PointOfTime> pointOfTimes = duration.assembleDurationPoints();
-        String tableName =
-            IndexController.LogicIndicesRegister.getPhysicalTableName(condition.getName());
+        final IndexFamily family = IndexFamily.of(condition.getName());
         Map<String, List<String>> indexIdsGroup = new HashMap<>();
 
-        boolean aggregationMode = !tableName.equals(condition.getName());
+        boolean aggregationMode = !family.getPhysicalName().equals(condition.getName());
         List<String> ids = new ArrayList<>(pointOfTimes.size());
         pointOfTimes.forEach(pointOfTime -> {
             String id = pointOfTime.id(condition.getEntity().buildId());
@@ -292,8 +284,7 @@ public class MetricsQueryEsDAO extends EsDAO implements IMetricsQueryDAO {
                 id = IndexController.INSTANCE.generateDocId(condition.getName(), id);
             }
             ids.add(id);
-            String indexName = TimeSeriesUtils.queryIndexName(
-                tableName, pointOfTime.getPoint(), duration.getStep(), false, false);
+            String indexName = IndexNames.pointIndex(family, pointOfTime.getPoint(), duration.getStep());
             indexIdsGroup.computeIfAbsent(indexName, v -> new ArrayList<>()).add(id);
         });
 

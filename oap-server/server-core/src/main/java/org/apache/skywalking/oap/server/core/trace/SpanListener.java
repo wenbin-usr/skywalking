@@ -63,12 +63,19 @@ public interface SpanListener {
      * Only OTLP trace sources reach this phase.
      *
      * @param span             abstracted OTLP span (no proto dependency)
-     * @param resourceAttributes OTLP resource attributes as a flat map
+     * @param serviceName      the service the span is analyzed and stored under, before the core's naming rules:
+     *                         resolved from the resource, then grouped by {@code receiver-otel.otlpServiceGroupKeys},
+     *                         so it can differ from the resource's {@code service.name}. A listener that names an
+     *                         entity by it formats it through {@code NamingControl} as the store does
+     * @param resourceAttributes OTLP resource attributes as a flat map. In the {@code zipkin} storage mode the
+     *                         receiver has already rewritten it: a fallback service-name key is replaced by
+     *                         {@code otlp.service.name.source}, and the scope's {@code otel.library.*} keys added
      * @param scopeName        InstrumentationScope name (e.g., "NSURLSession", "MetricKit")
      * @param scopeVersion     InstrumentationScope version
      * @return result controlling persistence and tag injection
      */
     default SpanListenerResult onOTLPSpan(final OTLPSpanReader span,
+                                          final String serviceName,
                                           final Map<String, String> resourceAttributes,
                                           final String scopeName,
                                           final String scopeVersion) {
@@ -83,6 +90,28 @@ public interface SpanListener {
      * @return result controlling tag injection
      */
     default SpanListenerResult onZipkinSpan(final ZipkinSpan span) {
+        return SpanListenerResult.CONTINUE;
+    }
+
+    /**
+     * Phase 2 for OTLP spans stored natively, when {@code receiver-otel.otlpTraceStorage} is {@code otlp}. No
+     * Zipkin conversion happens in that mode, so {@link #onZipkinSpan} is never called for these spans; a listener
+     * that reads a span's attributes after phase 1 implements this method instead, over the same attribute
+     * semantics. It is called right after {@link #onOTLPSpan} for the same span, and only when phase 1 did not
+     * veto persistence.
+     *
+     * @param span               abstracted OTLP span (no proto dependency)
+     * @param serviceName        the service the span is analyzed and stored under, see {@link #onOTLPSpan}
+     * @param resourceAttributes OTLP resource attributes as a flat map, as sent: the native mode rewrites none
+     * @param scopeName          InstrumentationScope name
+     * @param scopeVersion       InstrumentationScope version
+     * @return result controlling persistence and tag injection; injected tags are appended to the stored span
+     */
+    default SpanListenerResult onNativeOTLPSpan(final OTLPSpanReader span,
+                                                final String serviceName,
+                                                final Map<String, String> resourceAttributes,
+                                                final String scopeName,
+                                                final String scopeVersion) {
         return SpanListenerResult.CONTINUE;
     }
 }

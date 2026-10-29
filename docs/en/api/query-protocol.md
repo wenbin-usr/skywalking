@@ -169,7 +169,7 @@ extend type Query {
     queryBasicTraces(condition: TraceQueryCondition, debug: Boolean): TraceBrief
     queryBasicTracesByName(condition: TraceQueryConditionByName, debug: Boolean): TraceBrief
     # Read the specific trace ID with given trace ID
-    # duration is optional, and only for BanyanDB. If not provided, means search in the last 1 day.
+    # duration is optional, and only for BanyanDB. If not provided, means search in everything the hot/warm stages retain.
     queryTrace(traceId: ID!, duration: Duration, debug: Boolean): Trace
     # Read the list of searchable keys
     queryTraceTagAutocompleteKeys(duration: Duration!):[String!]
@@ -322,6 +322,32 @@ extend type Query {
     listLayerLevels: [LayerLevel!]!
 }
 ```
+
+### AI Agent Conversations
+Provide [AI agent conversation](../setup/backend/ai-agent-conversation.md) query APIs since 11.1.0: the list page is a
+GraphQL query; the conversation itself and its stored files are HTTP routes on the same server, because an `asz.view`
+document is as large as the conversation and both are streamed.
+```graphql
+extend type Query {
+    # The conversations of a service active in the duration, newest first.
+    listConversations(condition: ConversationListCondition!, duration: Duration!, debug: Boolean): ConversationList
+}
+```
+```
+GET /ai-agent/conversations/{conversation}/v1/view?service={serviceName}&instance={instanceName}[&coldStage=true]
+GET /ai-agent/conversations/{conversation}/v1/files?service={serviceName}&instance={instanceName}&session={session}&seq={seq}[&seq={seq}...][&coldStage=true]
+```
+When the OAP's `hide` setting names `system_prompt` or `tool_schemas`, both routes rewrite what they serve for every
+reader: the document loses the text of the steps that carry them, and a file is served with that content masked. See
+[Withholding](../setup/backend/ai-agent-conversation.md#withholding).
+The body is one `asz.view` 1.0 document, streamed, and its `Content-Type` names the format and the version:
+`application/vnd.skywalking.asz.view+json; version=1.0`, or the `+yaml` twin when `Accept` asks for YAML; compressed on
+`Accept-Encoding`. `v1` in the path is the document version. The files route streams up to 32 Session Data files of a session,
+each chosen by its landed seq, as `application/vnd.skywalking.asz.files+ndjson`: for each file a line naming it, then the
+file's bytes. The naming line carries `copies` when the storage holds that seq more than once, the file served being the
+first. Both routes
+answer 400 without the service or the instance, 404 when the sender stores no round of the conversation, 500 on a
+storage failure, each as `application/problem+json`.
 
 ## Condition
 ### Duration

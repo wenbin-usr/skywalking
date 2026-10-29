@@ -1,0 +1,229 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Windows infrastructure MAL.
+#
+# The existing windows-exporter source and the OpenTelemetry hostmetrics source
+# intentionally use the same existing job_name "windows-monitoring". One MAL
+# file maps either input family to the canonical meter_win_* targets, avoiding
+# cross-file metric ownership collisions in OAP 11.
+filter: "{ tags -> tags.job_name == 'windows-monitoring' }"
+expSuffix: service(['node_identifier_host_name'], Layer.OS_WINDOWS)
+metricPrefix: meter_win
+
+metricsRules:
+  # ---------------------------------------------------------------------------
+  # Canonical windows.yaml metrics, now accepting either source.
+  # ---------------------------------------------------------------------------
+
+  # CPU
+  # Windows modes overlap: windows_exporter's `privileged` already includes
+  # `interrupt` and `dpc` time, and hostmetrics' `system` already includes
+  # `interrupt` time. Busy CPU is therefore user + privileged/system only.
+  - name: cpu_total_percentage
+    exp: >
+      (windows_cpu_time_total * 100)
+        .tagMatch('mode','^(user|privileged)$')
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+      +
+      (system_cpu_time * 100)
+        .tagMatch('mode','^(user|system)$')
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+
+  - name: cpu_average_used
+    exp: >
+      (windows_cpu_time_total * 100)
+        .sum(['node_identifier_host_name','mode'])
+        .rate('PT1M')
+      +
+      (system_cpu_time * 100)
+        .sum(['node_identifier_host_name','mode'])
+        .rate('PT1M')
+
+  # Physical memory. The windows_exporter branch reads the `memory` collector
+  # (windows_exporter 0.29.0+); 0.31.0 removed the `cs` collector and the
+  # `os` memory metrics this rule used before.
+  - name: memory_total
+    exp: >
+      windows_memory_physical_total_bytes
+      +
+      system_memory_limit.sum(['node_identifier_host_name'])
+
+  - name: memory_available
+    exp: >
+      windows_memory_physical_free_bytes
+      +
+      system_memory_usage
+        .tagEqual('state','free')
+        .sum(['node_identifier_host_name'])
+
+  - name: memory_used
+    exp: >
+      (windows_memory_physical_total_bytes - windows_memory_physical_free_bytes)
+      +
+      (
+        system_memory_limit.sum(['node_identifier_host_name'])
+        -
+        system_memory_usage.tagEqual('state','free').sum(['node_identifier_host_name'])
+      )
+
+  # Canonical virtual memory semantics: the commit limit and committed bytes.
+  # windows_exporter reads them from its `memory` collector; the hostmetrics
+  # branch uses Windows Performance Counters:
+  #   Memory\\Commit Limit
+  #   Memory\\Committed Bytes
+  - name: memory_virtual_memory_free
+    exp: >
+      (windows_memory_commit_limit - windows_memory_committed_bytes)
+      +
+      (
+        system_virtual_memory_commit_limit.sum(['node_identifier_host_name'])
+        -
+        system_virtual_memory_committed.sum(['node_identifier_host_name'])
+      )
+
+  - name: memory_virtual_memory_total
+    exp: >
+      windows_memory_commit_limit
+      +
+      system_virtual_memory_commit_limit.sum(['node_identifier_host_name'])
+
+  - name: memory_virtual_memory_percentage
+    exp: >
+      (
+        windows_memory_committed_bytes * 100 / windows_memory_commit_limit
+      )
+      +
+      (
+        system_virtual_memory_committed.sum(['node_identifier_host_name']) * 100
+        /
+        system_virtual_memory_commit_limit.sum(['node_identifier_host_name'])
+      )
+
+  # Disk throughput
+  - name: disk_read
+    exp: >
+      windows_logical_disk_read_bytes_total
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+      +
+      system_disk_io
+        .tagEqual('direction','read')
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+
+  - name: disk_written
+    exp: >
+      windows_logical_disk_write_bytes_total
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+      +
+      system_disk_io
+        .tagEqual('direction','write')
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+
+  # Network throughput
+  - name: network_receive
+    exp: >
+      windows_net_bytes_received_total
+        .sum(['node_identifier_host_name'])
+        .irate()
+      +
+      system_network_io
+        .tagEqual('direction','receive')
+        .sum(['node_identifier_host_name'])
+        .irate()
+
+  - name: network_transmit
+    exp: >
+      windows_net_bytes_sent_total
+        .sum(['node_identifier_host_name'])
+        .irate()
+      +
+      system_network_io
+        .tagEqual('direction','transmit')
+        .sum(['node_identifier_host_name'])
+        .irate()
+
+  # ---------------------------------------------------------------------------
+  # Additional hostmetrics capabilities. These are additive and do not change
+  # the existing windows-exporter metric contract.
+  # ---------------------------------------------------------------------------
+  - name: cpu_cores_num
+    exp: system_cpu_logical_count.sum(['node_identifier_host_name'])
+
+  - name: cpu_norm_percentage
+    exp: >
+      (system_cpu_time * 100)
+        .tagMatch('mode','^(user|system)$')
+        .sum(['node_identifier_host_name'])
+        .rate('PT1M')
+      /
+      system_cpu_logical_count.sum(['node_identifier_host_name'])
+
+  - name: cpu_load1
+    exp: system_cpu_load_average_1m.sum(['node_identifier_host_name']) * 100
+
+  - name: cpu_load5
+    exp: system_cpu_load_average_5m.sum(['node_identifier_host_name']) * 100
+
+  - name: cpu_load15
+    exp: system_cpu_load_average_15m.sum(['node_identifier_host_name']) * 100
+
+  - name: filesystem_percentage
+    exp: >
+      100 - (
+        (system_filesystem_usage.tagEqual('state','free') * 100)
+          .sum(['node_identifier_host_name','mountpoint'])
+        /
+        (
+          system_filesystem_usage.tagEqual('state','free')
+            .sum(['node_identifier_host_name','mountpoint'])
+          +
+          system_filesystem_usage.tagEqual('state','reserved')
+            .sum(['node_identifier_host_name','mountpoint'])
+          +
+          system_filesystem_usage.tagEqual('state','used')
+            .sum(['node_identifier_host_name','mountpoint'])
+        )
+      )
+
+  - name: filehandles_allocated
+    exp: system_filehandles_allocated.sum(['node_identifier_host_name'])
+
+  # system.paging.usage is the Windows pagefile, not the windows.yaml virtual
+  # memory metric. Keep it under explicit new names.
+  - name: memory_pagefile_free
+    exp: >
+      system_paging_usage
+        .tagEqual('state','free')
+        .sum(['node_identifier_host_name'])
+
+  - name: memory_pagefile_total
+    exp: system_paging_usage.sum(['node_identifier_host_name'])
+
+  - name: memory_pagefile_percentage
+    exp: >
+      (
+        system_paging_usage
+          .tagEqual('state','used')
+          .sum(['node_identifier_host_name'])
+        * 100
+      )
+      /
+      system_paging_usage.sum(['node_identifier_host_name'])

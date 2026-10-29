@@ -149,6 +149,22 @@ core:
     maxHeapMemoryUsagePercent: ${SW_CORE_MAX_HEAP_MEMORY_USAGE_PERCENT:96}
     # The long value of the max direct memory usage. The default max value is -1, representing no limit. The unit is in bytes.
     maxDirectMemoryUsage: ${SW_CORE_MAX_DIRECT_MEMORY_USAGE:-1}
+    # How long, in milliseconds, one MAL lookup step of Kubernetes metadata, such as one retagByK8sMeta over the samples of a metric, waits in all
+    # for metadata not read from the API server yet. The rest keeps being read in the background, for the next data. Keep it under the timeout of
+    # the sender, such as the 5 seconds of the OpenTelemetry Collector's OTLP exporter, which sends the data again when it times out.
+    malMetadataReadTimeout: ${SW_CORE_MAL_METADATA_READ_TIMEOUT:2000}
+    # How long, in minutes, cached Kubernetes metadata is kept after it was last written, per cache, as als=<minutes>,mal=<minutes>: als for Envoy ALS,
+    # mal for MAL and the eBPF access log. Each is longer than k8sMetadataRefreshPeriod.
+    k8sMetadataCacheTime: ${SW_CORE_K8S_METADATA_CACHE_TIME:"als=21,mal=21"}
+    # How long, in minutes, cached Kubernetes metadata is used before it is read again from the API server, on its next use, and a failed read waits
+    # before it is retried.
+    k8sMetadataRefreshPeriod: ${SW_CORE_K8S_METADATA_REFRESH_PERIOD:3}
+    # How long, in minutes, a Kubernetes metadata lookup that found nothing, such as for a pod too new for the lists read, is used before it is read
+    # again, on its next use.
+    k8sMetadataNotFoundRetryPeriod: ${SW_CORE_K8S_METADATA_NOT_FOUND_RETRY_PERIOD:1}
+    # The most Kubernetes metadata reads waiting at once per lane, as als=<size>,mal=<size>: als for Envoy ALS, the eBPF access log and every read again,
+    # mal for the MAL lookups, which wait. A lane left out, or -1, has no limit. The waiting reads are of distinct keys, such as IPs.
+    k8sMetadataReadQueueSize: ${SW_CORE_K8S_METADATA_READ_QUEUE_SIZE:""}
 storage:
   selector: ${SW_STORAGE:banyandb}
   banyandb:
@@ -201,6 +217,8 @@ storage:
     enableCustomRouting: ${SW_STORAGE_ES_ENABLE_CUSTOM_ROUTING:false}
   mysql:
     properties:
+      # Please do not include the username and password in the jdbcUrl; set them through dataSource.user and dataSource.password below.
+      # If you want to hide the URL so that it cannot be seen in the configdump information, add `jdbcUrl` to keywords4MaskingSecretsOfConfig.
       jdbcUrl: ${SW_JDBC_URL:"jdbc:mysql://localhost:3306/swtest?rewriteBatchedStatements=true&allowMultiQueries=true"}
       dataSource.user: ${SW_DATA_SOURCE_USER:root}
       dataSource.password: ${SW_DATA_SOURCE_PASSWORD:root@1234}
@@ -213,6 +231,8 @@ storage:
     asyncBatchPersistentPoolSize: ${SW_STORAGE_ASYNC_BATCH_PERSISTENT_POOL_SIZE:4}
   postgresql:
     properties:
+      # Please do not include the username and password in the jdbcUrl; set them through dataSource.user and dataSource.password below.
+      # If you want to hide the URL so that it cannot be seen in the configdump information, add `jdbcUrl` to keywords4MaskingSecretsOfConfig.
       jdbcUrl: ${SW_JDBC_URL:"jdbc:postgresql://localhost:5432/skywalking"}
       dataSource.user: ${SW_DATA_SOURCE_USER:postgres}
       dataSource.password: ${SW_DATA_SOURCE_PASSWORD:123456}
@@ -235,15 +255,41 @@ agent-analyzer:
     # Nginx and Envoy agents can't get the real remote address.
     # Exit spans with the component in the list would not generate the client-side instance relation metrics.
     noUpstreamRealAddressAgents: ${SW_NO_UPSTREAM_REAL_ADDRESS:6000,9000}
-    meterAnalyzerActiveFiles: ${SW_METER_ANALYZER_ACTIVE_FILES:datasource,threadpool,satellite,go-runtime,python-runtime,continuous-profiling,java-agent,go-agent,ruby-runtime,php-runtime,nodejs-runtime} # Which files could be meter analyzed, files split by ","
+    meterAnalyzerActiveFiles: ${SW_METER_ANALYZER_ACTIVE_FILES:datasource,threadpool,satellite,go-runtime,python-runtime,continuous-profiling,java-agent,go-agent,ruby-runtime,php-runtime,nodejs-runtime,gen-ai-model} # Which files could be meter analyzed, files split by ","
     slowCacheReadThreshold: ${SW_SLOW_CACHE_SLOW_READ_THRESHOLD:default:20,redis:10} # The slow cache read operation thresholds. Unit ms.
     slowCacheWriteThreshold: ${SW_SLOW_CACHE_SLOW_WRITE_THRESHOLD:default:20,redis:10} # The slow cache write operation thresholds. Unit ms.
 
 log-analyzer:
   selector: ${SW_LOG_ANALYZER:default}
   default:
-    lalFiles: ${SW_LOG_LAL_FILES:envoy-als,mesh-dp,mysql-slowsql,pgsql-slowsql,redis-slowsql,k8s-service,nginx,envoy-ai-gateway,miniprogram,default}
+    lalFiles: ${SW_LOG_LAL_FILES:envoy-als,mesh-dp,mysql-slowsql,pgsql-slowsql,redis-slowsql,k8s-service,nginx,envoy-ai-gateway,miniprogram,ai-agent,default}
     malFiles: ${SW_LOG_MAL_FILES:"nginx,miniprogram-wechat,miniprogram-alipay"}
+
+trace-analyzer:
+  # `-` removes the module; the OTLP trace receiver then stores the spans without analysis. An empty `talFiles`
+  # keeps the module and analyzes nothing, which is the same for the data.
+  selector: ${SW_TRACE_ANALYZER:default}
+  default:
+    # TAL rule files under `tal/`, without extension, comma separated. Empty disables span analysis while keeping
+    # the module loaded.
+    talFiles: ${SW_TRACE_TAL_FILES:otlp-general}
+    # Spans seen within this window (seconds) are analyzed once, so an exporter that retries a batch after a
+    # transport timeout does not count a request twice. 0, the default, keeps no set at all and treats every
+    # arrival as new, which is what OTLP logs do today. Set it longer than the exporter's retry budget; the OTLP
+    # SDKs give up after about 30 s. The set is per OAP node: a retry that reaches another node is counted again.
+    dedupWindow: ${SW_TRACE_TAL_DEDUP_WINDOW:0}
+    # The most (traceId, spanId) pairs the set holds on this node while dedupWindow is above 0; ignored at 0.
+    # Only a span some rule runs on takes an entry, not one on a layer no rule is declared for. Size it as such
+    # spans per second on this node times dedupWindow, with headroom: once full, the oldest entries drop before
+    # they expire and a late retry of one of them is counted. About 150 bytes per entry.
+    dedupCapacity: ${SW_TRACE_TAL_DEDUP_CAPACITY:1000000}
+    # The percentage of traces whose client and server spans are paired to learn a network address alias, on the
+    # trace's owner node in a cluster and on the node itself when it is alone; both spans of a call share the trace
+    # id, so a pair is never split. A caller + peer pair only has to be learned once, after which every node
+    # resolves it from its cache, so a sample is enough: at 25 a new caller + peer pair is learned after about four
+    # calls. 100 pairs every trace, at one small message per CLIENT span that prepares an alias and one per SERVER
+    # span whose rule builds one; 0 pairs none.
+    pairingSamplePercent: ${SW_TRACE_TAL_PAIRING_SAMPLE_PERCENT:25}
 
 event-analyzer:
   selector: ${SW_EVENT_ANALYZER:default}
@@ -252,6 +298,42 @@ event-analyzer:
 gen-ai-analyzer:
   selector: ${SW_GENAI_ANALYZER:default}
   default:
+
+ai-evaluation:
+  selector: ${SW_AI_EVALUATION:-}
+  default:
+    sampleRate: ${SW_AI_EVALUATION_SAMPLE_RATE:1000000}
+    bufferSize: ${SW_AI_EVALUATION_BUFFER_SIZE:100}
+    consumerThreads: ${SW_AI_EVALUATION_CONSUMER_THREADS:8}
+    # Maximum escaped characters included from each input/output message field.
+    maxContentLength: ${SW_AI_EVALUATION_MAX_CONTENT_LENGTH:16384}
+
+# AI agent conversations landed by the AI Sessionizer (Session Data and Session Flow files over OTLP logs under the
+# AI_AGENT layer).
+ai-agent-conversation:
+  selector: ${SW_AI_AGENT_CONVERSATION:default}
+  # Turns the feature off: neither record model is created in the storage, no query is answered and no
+  # conversation view route is registered. The GraphQL query module requires this module, so `-` can't remove it.
+  none:
+  default:
+    # The most rounds one conversation list reads. It counts rounds, not conversations, so a busy
+    # conversation spends the budget of the quiet ones.
+    conversationListMaxLimit: ${SW_AI_AGENT_CONVERSATION_LIST_MAX_LIMIT:10000}
+    # How long one conversation view request may take, in seconds; the whole chain is folded before the first byte.
+    viewRequestTimeout: ${SW_AI_AGENT_CONVERSATION_VIEW_REQUEST_TIMEOUT:120}
+    # How many files or rounds one storage query fetches; a conversation is read batch by batch.
+    readWindow: ${SW_AI_AGENT_CONVERSATION_READ_WINDOW:16}
+    # The most bytes one storage query may answer with. BanyanDB alone accepts it, raising its client's
+    # 50 MB per-call cap for this module; Elasticsearch and JDBC bound a read by hits and by rows. With hide
+    # set, it also bounds what rebuilding one request body holds at once.
+    maxResponseBytes: ${SW_AI_AGENT_CONVERSATION_MAX_RESPONSE_BYTES:104857600}
+    # The largest file stored; a larger one is rejected at ingest, under BanyanDB's 16 MiB message limit.
+    maxFileBytes: ${SW_AI_AGENT_CONVERSATION_MAX_FILE_BYTES:15728640}
+    # What is withheld from every reader, separated by commas: system_prompt, the system prompt a runtime sent
+    # its model, and tool_schemas, the schemas of the tools it offered. The conversation document and the files
+    # are served with that content masked; the storage holds everything. It applies to every reader, and the
+    # routes take no parameter for it. Empty withholds nothing.
+    hide: ${SW_AI_AGENT_CONVERSATION_HIDE:}
 
 receiver-sharing-server:
   selector: ${SW_RECEIVER_SHARING_SERVER:default}
@@ -399,7 +481,27 @@ receiver-otel:
   selector: ${SW_OTEL_RECEIVER:default}
   default:
     enabledHandlers: ${SW_OTEL_RECEIVER_ENABLED_HANDLERS:"otlp-traces,otlp-metrics,otlp-logs"}
-    enabledOtelMetricsRules: ${SW_OTEL_RECEIVER_ENABLED_OTEL_METRICS_RULES:"apisix,nginx/*,k8s/*,istio-controlplane,vm,mysql/*,postgresql/*,oap,aws-eks/*,windows,aws-s3/*,aws-dynamodb/*,aws-gateway/*,redis/*,elasticsearch/*,rabbitmq/*,mongodb/*,kafka/*,pulsar/*,bookkeeper/*,rocketmq/*,clickhouse/*,activemq/*,kong/*,flink/*,airflow/*,banyandb/*,envoy-ai-gateway/*,ios/*,miniprogram/*"}
+    # Where the `otlp-traces` handler stores spans.
+    #   otlp:   store the native OTLP span in `otlp_span`, served by the TraceQL `/otlp` datasource
+    #   zipkin: convert to Zipkin v2 and hand them to receiver-zipkin (needs receiver-zipkin and query-zipkin)
+    otlpTraceStorage: ${SW_OTEL_TRACE_STORAGE:otlp}
+    # Resource attribute keys, comma separated, in order of preference: the first one a resource carries groups its
+    # service, so `cart` with `service.namespace=shop` is the service `shop::cart` of the group `shop` in the trace
+    # analysis, the stored spans and the logs; the resource attributes stay as sent. A caller that dials the host
+    # `cart` still reaches `shop::cart`. Use an attribute that holds one low-cardinality value per service, such as
+    # `service.namespace`, `deployment.environment.name` or `k8s.namespace.name`. Empty, the default, groups nothing.
+    otlpServiceGroupKeys: ${SW_OTEL_RECEIVER_OTLP_SERVICE_GROUP:""}
+    # `otlp` mode only. Attribute keys offered by tag autocomplete (TraceQL /api/v2/search/tags), each written with its
+    # TraceQL scope, `resource.<key>` or `span.<key>`; an entry without a scope fails the boot. List low-cardinality
+    # attributes only: every distinct value is stored once per day. Every resource and span attribute is indexed for
+    # equality search regardless of this list. Not read in `zipkin` mode: the converted spans go through receiver-zipkin,
+    # whose `searchableTracesTags` decides autocomplete there.
+    otlpTraceSearchableTags: ${SW_OTEL_TRACE_SEARCHABLE_TAG_KEYS:resource.deployment.environment.name,resource.deployment.environment,resource.service.namespace,resource.service.version,resource.k8s.namespace.name,resource.k8s.cluster.name,span.http.request.method,span.http.response.status_code,span.url.path,span.rpc.method,span.rpc.grpc.status_code,span.db.system.name,span.db.namespace,span.messaging.system,span.messaging.destination.name,span.peer.service}
+    # `otlp` mode only. Head sampling by trace id, precision 1/10000.
+    otlpTraceSampleRate: ${SW_OTEL_TRACE_SAMPLE_RATE:10000}
+    # `otlp` mode only. Spans per second accepted before dropping. 0 means no limit.
+    otlpTraceMaxSpansPerSecond: ${SW_OTEL_TRACE_MAX_SPANS_PER_SECOND:0}
+    enabledOtelMetricsRules: ${SW_OTEL_RECEIVER_ENABLED_OTEL_METRICS_RULES:"apisix,nginx/*,k8s/*,istio-controlplane,vm,process-hostmetrics-linux,mysql/*,postgresql/*,oap,aws-eks/*,windows,process-hostmetrics-windows,aws-s3/*,aws-dynamodb/*,aws-gateway/*,redis/*,elasticsearch/*,rabbitmq/*,mongodb/*,kafka/*,pulsar/*,bookkeeper/*,rocketmq/*,clickhouse/*,activemq/*,kong/*,flink/*,airflow/*,banyandb/*,envoy-ai-gateway/*,ios/*,miniprogram/*,ai-agent/*"}
 
 receiver-zipkin:
   selector: ${SW_RECEIVER_ZIPKIN:-}
@@ -524,8 +626,11 @@ traceQL:
     restPort: ${SW_TRACEQL_REST_PORT:3200}
     enableDatasourceZipkin: ${SW_TRACEQL_ENABLE_DATASOURCE_ZIPKIN:false}
     enableDatasourceSkywalking: ${SW_TRACEQL_ENABLE_DATASOURCE_SKYWALKING:false}
+    # Natively stored OTLP spans (receiver-otel.otlpTraceStorage: otlp), served as the OTLP they arrived as.
+    enableDatasourceOTLP: ${SW_TRACEQL_ENABLE_DATASOURCE_OTLP:false}
     restContextPathZipkin: ${SW_TRACEQL_REST_CONTEXT_PATH_ZIPKIN:/zipkin}
     restContextPathSkywalking: ${SW_TRACEQL_REST_CONTEXT_PATH_SKYWALKING:/skywalking}
+    restContextPathOTLP: ${SW_TRACEQL_REST_CONTEXT_PATH_OTLP:/otlp}
     restIdleTimeOut: ${SW_TRACEQL_REST_IDLE_TIMEOUT:30000}
     restAcceptQueueSize: ${SW_TRACEQL_REST_QUEUE_SIZE:0}
     restSSLEnabled: ${SW_TRACEQL_REST_SSL_ENABLED:false}
@@ -536,10 +641,15 @@ traceQL:
     # The tags in the list result of traces query, which would be used for trace grouping and shown in the trace list page.
     zipkinTracesListResultTags: ${SW_TRACEQL_ZIPKIN_TRACES_LIST_RESULT_TAGS:http.method,error}
     skywalkingTracesListResultTags: ${SW_TRACEQL_SKYWALKING_TRACES_LIST_RESULT_TAGS:http.method,http.status_code,rpc.status_code,db.type,db.instance,mq.queue,mq.topic,mq.broker}
+    # The span attributes included in the trace list result of the OTLP datasource, used by Grafana for grouping.
+    otlpTracesListResultTags: ${SW_TRACEQL_OTLP_TRACES_LIST_RESULT_TAGS:http.request.method,http.response.status_code}
 
 alarm:
   selector: ${SW_ALARM:default}
   default:
+    # Deadline (seconds) of each HTTP request an HTTP-based alarm hook (every hook except gRPC) sends,
+    # covering connecting, waiting for the response and reading the response body. Values <= 0 fall back to 12.
+    httpTimeout: ${SW_ALARM_HTTP_TIMEOUT:12}
 
 telemetry:
   selector: ${SW_TELEMETRY:prometheus}

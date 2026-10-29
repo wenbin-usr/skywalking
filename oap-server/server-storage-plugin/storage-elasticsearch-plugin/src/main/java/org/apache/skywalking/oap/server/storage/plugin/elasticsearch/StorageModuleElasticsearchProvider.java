@@ -55,6 +55,8 @@ import org.apache.skywalking.oap.server.core.storage.query.IAggregationQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IAlarmQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IBrowserLogQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IEventQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IAIAgentConversationQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IGenAIEvaluationRecordQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IHierarchyQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ILogQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IMetadataQueryDAO;
@@ -64,6 +66,7 @@ import org.apache.skywalking.oap.server.core.storage.query.ISpanAttachedEventQue
 import org.apache.skywalking.oap.server.core.storage.query.ITagAutoCompleteQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ITopologyQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ITraceQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IOTLPTraceQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IZipkinQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.ttl.DefaultStorageTTLStatusQuery;
 import org.apache.skywalking.oap.server.core.storage.ttl.StorageTTLStatusQuery;
@@ -79,7 +82,7 @@ import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.Histor
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.IndexController;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.StorageEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.StorageEsInstaller;
-import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.TimeSeriesUtils;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.IndexNames;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.cache.NetworkAddressAliasEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.AggregationQueryEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.AlarmQueryEsDAO;
@@ -93,6 +96,8 @@ import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.EBPFP
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.EBPFProfilingTaskEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.ESEventQueryDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.HierarchyQueryEsDAO;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.AIAgentConversationQueryEsDAO;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.GenAIEvaluationRecordQueryEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.JFRDataQueryEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.PprofDataQueryEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.LogQueryEsDAO;
@@ -110,6 +115,7 @@ import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.Topol
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.TraceQueryEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.RuntimeRuleManagementEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.UITemplateManagementEsDAO;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.otlp.OTLPTraceQueryEsDAO;
 import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.query.zipkin.ZipkinQueryEsDAO;
 import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
 import org.apache.skywalking.oap.server.telemetry.api.HealthCheckMetrics;
@@ -160,13 +166,7 @@ public class StorageModuleElasticsearchProvider extends ModuleProvider {
         } else {
             config.setNamespace(config.getNamespace().toLowerCase());
         }
-        if (config.getDayStep() > 1) {
-            TimeSeriesUtils.setDAY_STEP(config.getDayStep());
-            TimeSeriesUtils.setSUPER_DATASET_DAY_STEP(config.getDayStep());
-        }
-        if (config.getSuperDatasetDayStep() > 0) {
-            TimeSeriesUtils.setSUPER_DATASET_DAY_STEP(config.getSuperDatasetDayStep());
-        }
+        IndexNames.configure(config.getDayStep(), config.getSuperDatasetDayStep());
 
         if (!StringUtil.isEmpty(config.getSecretsManagementFile())) {
             MultipleFilesChangeMonitor monitor = new MultipleFilesChangeMonitor(
@@ -242,6 +242,10 @@ public class StorageModuleElasticsearchProvider extends ModuleProvider {
         this.registerServiceImplementation(IRecordsQueryDAO.class, new RecordsQueryEsDAO(elasticSearchClient));
         this.registerServiceImplementation(ILogQueryDAO.class, new LogQueryEsDAO(elasticSearchClient));
         this.registerServiceImplementation(
+            IGenAIEvaluationRecordQueryDAO.class, new GenAIEvaluationRecordQueryEsDAO(elasticSearchClient));
+        this.registerServiceImplementation(
+            IAIAgentConversationQueryDAO.class, new AIAgentConversationQueryEsDAO(elasticSearchClient));
+        this.registerServiceImplementation(
             IProfileTaskQueryDAO.class, new ProfileTaskQueryEsDAO(elasticSearchClient, config
                 .getProfileTaskQueryMaxSize()));
         this.registerServiceImplementation(
@@ -281,6 +285,8 @@ public class StorageModuleElasticsearchProvider extends ModuleProvider {
             ITagAutoCompleteQueryDAO.class, new TagAutoCompleteQueryDAO(elasticSearchClient));
         this.registerServiceImplementation(
             IZipkinQueryDAO.class, new ZipkinQueryEsDAO(elasticSearchClient));
+        this.registerServiceImplementation(
+            IOTLPTraceQueryDAO.class, new OTLPTraceQueryEsDAO(elasticSearchClient));
         this.registerServiceImplementation(
             ISpanAttachedEventQueryDAO.class, new SpanAttachedEventEsDAO(elasticSearchClient, config));
 

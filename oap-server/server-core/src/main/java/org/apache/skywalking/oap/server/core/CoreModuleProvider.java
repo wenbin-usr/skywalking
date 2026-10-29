@@ -23,6 +23,7 @@ import java.io.IOException;
 import org.apache.skywalking.oap.server.configuration.api.ConfigurationModule;
 import org.apache.skywalking.oap.server.configuration.api.DynamicConfigurationService;
 import org.apache.skywalking.oap.server.core.analysis.ApdexThresholdConfig;
+import org.apache.skywalking.oap.server.core.query.GenAIEvaluationRecordQueryService;
 import org.apache.skywalking.oap.server.core.rule.ext.RuleSetMerger;
 import org.apache.skywalking.oap.server.core.analysis.DisableRegister;
 import org.apache.skywalking.oap.server.core.analysis.Layer;
@@ -30,6 +31,7 @@ import org.apache.skywalking.oap.server.core.analysis.LayerExtensionLoader;
 import org.apache.skywalking.oap.server.core.analysis.StreamAnnotationListener;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterEntity;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterSystem;
+import org.apache.skywalking.oap.server.core.analysis.meter.function.apdex.ApdexFunction;
 import org.apache.skywalking.oap.server.core.analysis.metrics.ApdexMetrics;
 import org.apache.skywalking.oap.server.core.analysis.worker.MetricsStreamProcessor;
 import org.apache.skywalking.oap.server.core.analysis.worker.RecordStreamProcessor;
@@ -50,6 +52,7 @@ import org.apache.skywalking.oap.server.core.config.ConfigService;
 import org.apache.skywalking.oap.server.core.config.DownSamplingConfigService;
 import org.apache.skywalking.oap.server.core.config.HierarchyDefinitionService;
 import org.apache.skywalking.oap.server.core.config.IComponentLibraryCatalogService;
+import org.apache.skywalking.oap.server.core.config.K8sMetadataReadSettings;
 import org.apache.skywalking.oap.server.core.config.NamingControl;
 import org.apache.skywalking.oap.server.core.trace.SpanListenerManager;
 import org.apache.skywalking.oap.server.core.config.group.EndpointNameGroupService;
@@ -191,6 +194,15 @@ public class CoreModuleProvider extends ModuleProvider {
 
         if (moduleConfig.isActiveExtraModelColumns()) {
             DefaultScopeDefine.activeExtraModelColumns();
+        }
+        try {
+            K8sMetadataReadSettings.set(
+                moduleConfig.getMalMetadataReadTimeout(), moduleConfig.getK8sMetadataReadQueueSize(),
+                moduleConfig.getK8sMetadataCacheTime(), moduleConfig.getK8sMetadataRefreshPeriod(),
+                moduleConfig.getK8sMetadataNotFoundRetryPeriod()
+            );
+        } catch (final IllegalArgumentException e) {
+            throw new ModuleStartException(e.getMessage(), e);
         }
         endpointNameGrouping = new EndpointNameGrouping();
         final NamingControl namingControl = new NamingControl(
@@ -366,6 +378,9 @@ public class CoreModuleProvider extends ModuleProvider {
         this.registerServiceImplementation(
             ContinuousProfilingQueryService.class, new ContinuousProfilingQueryService(getManager()));
 
+        this.registerServiceImplementation(
+                GenAIEvaluationRecordQueryService.class, new GenAIEvaluationRecordQueryService(getManager()));
+
         this.registerServiceImplementation(CommandService.class, new CommandService(getManager()));
 
         // add oal engine loader service implementations
@@ -405,6 +420,8 @@ public class CoreModuleProvider extends ModuleProvider {
         TopNStreamProcessor.getInstance().setTopNWorkerReportCycle(moduleConfig.getTopNReportPeriod());
         apdexThresholdConfig = new ApdexThresholdConfig(this);
         ApdexMetrics.setDICT(apdexThresholdConfig);
+        // TAL's apdex metrics read the same thresholds as OAL's apdex(name, status).
+        ApdexFunction.setDICT(apdexThresholdConfig);
         loggingConfigWatcher = new LoggingConfigWatcher(this);
 
         WatermarkGRPCInterceptor.create();
@@ -485,14 +502,8 @@ public class CoreModuleProvider extends ModuleProvider {
         // queries see a stable layer set.
         Layer.seal();
 
-        try {
-            if (!RunningMode.isInitMode()) {
-                grpcServer.start();
-                httpServer.start();
-                remoteClientManager.start();
-            }
-        } catch (ServerException e) {
-            throw new ModuleStartException(e.getMessage(), e);
+        if (!RunningMode.isInitMode()) {
+            remoteClientManager.start();
         }
         PersistenceTimer.INSTANCE.start(getManager(), moduleConfig);
 
@@ -510,6 +521,23 @@ public class CoreModuleProvider extends ModuleProvider {
         hierarchyService.startAutoMatchingServiceHierarchy();
 
         watermarkWatcher.start(getManager().find(TelemetryModule.NAME).provider().getService(MetricsCollector.class));
+    }
+
+    /**
+     * The receiver ports open last: every module has finished its boot-time work in
+     * {@link #notifyAfterCompleted()} by now, so the first request meets a fully booted OAP.
+     */
+    @Override
+    public void notifyBootCompleted() throws ModuleStartException {
+        if (RunningMode.isInitMode()) {
+            return;
+        }
+        try {
+            grpcServer.start();
+            httpServer.start();
+        } catch (ServerException e) {
+            throw new ModuleStartException(e.getMessage(), e);
+        }
     }
 
     @Override

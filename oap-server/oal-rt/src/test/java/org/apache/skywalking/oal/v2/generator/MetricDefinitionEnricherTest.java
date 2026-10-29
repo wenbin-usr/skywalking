@@ -18,9 +18,14 @@
 
 package org.apache.skywalking.oal.v2.generator;
 
+import java.lang.reflect.Method;
 import java.util.List;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtNewMethod;
 import org.apache.skywalking.oal.v2.model.MetricDefinition;
 import org.apache.skywalking.oal.v2.parser.OALScriptParserV2;
+import org.apache.skywalking.oap.server.core.analysis.metrics.expression.GreaterEqualMatch;
 import org.apache.skywalking.oap.server.core.source.DefaultScopeDefine;
 import org.apache.skywalking.oap.server.core.source.Endpoint;
 import org.apache.skywalking.oap.server.core.source.K8SService;
@@ -53,16 +58,24 @@ public class MetricDefinitionEnricherTest {
 
     @BeforeAll
     public static void initializeScopes() {
-        try {
-            DefaultScopeDefine.Listener listener = new DefaultScopeDefine.Listener();
-            listener.notify(Service.class);
-            listener.notify(Endpoint.class);
-            listener.notify(ServiceRelation.class);
-            listener.notify(K8SService.class);
-            listener.notify(K8SServiceInstance.class);
-            listener.notify(TCPService.class);
-        } catch (RuntimeException e) {
-            // Scopes may already be registered by other tests
+        // Each registration is guarded separately. notify() throws when a scope id is already
+        // registered by another test in this JVM, and a single try around the whole block would
+        // swallow that and silently skip every scope after it — leaving the rest unregistered and
+        // failing later with "ScopeDefine name = ... not found". Which scope trips first depends
+        // on surefire's run order, so the truncation only shows up on some platforms.
+        final DefaultScopeDefine.Listener listener = new DefaultScopeDefine.Listener();
+        for (final Class<?> scope : List.of(
+            Service.class,
+            Endpoint.class,
+            ServiceRelation.class,
+            K8SService.class,
+            K8SServiceInstance.class,
+            TCPService.class)) {
+            try {
+                listener.notify(scope);
+            } catch (RuntimeException e) {
+                // Already registered by a sibling test; the remaining scopes still need registering.
+            }
         }
     }
 
@@ -377,6 +390,55 @@ public class MetricDefinitionEnricherTest {
 
         // Verify right side is numeric
         assertEquals("1000", filterExpr.getRight());
+    }
+
+    /**
+     * Test a number compared with a long attribute: filter(sideCar.internalRequestLatencyNanos >= 0)
+     * The literal must be a long, or the generated code looks for GreaterEqualMatch#match(long, int).
+     */
+    @Test
+    public void testNumericComparisonFilterOnLongAttribute() throws Exception {
+        String oal = "relation_internal_req_latency = from(ServiceRelation.sideCar.internalRequestLatencyNanos)"
+            + ".filter(sideCar.internalRequestLatencyNanos >= 0).longAvg();";
+
+        MetricDefinitionEnricher enricher = new MetricDefinitionEnricher(SOURCE_PACKAGE, METRICS_PACKAGE);
+        OALScriptParserV2 parser = OALScriptParserV2.parse(oal);
+        MetricDefinition metric = parser.getMetrics().get(0);
+        CodeGenModel model = enricher.enrich(metric);
+
+        CodeGenModel.FilterExpressionV2 filterExpr = model.getFilterExpressions().get(0);
+        assertTrue(filterExpr.getExpressionObject().contains("GreaterEqualMatch"),
+            "Expected GreaterEqualMatch but got: " + filterExpr.getExpressionObject());
+        assertEquals("source.getSideCar().getInternalRequestLatencyNanos()", filterExpr.getLeft());
+        assertEquals("0L", filterExpr.getRight());
+    }
+
+    /**
+     * A number above Integer.MAX_VALUE keeps its value once Javassist compiles the literal. A cast such as
+     * (long)(3000000000) would overflow to -1294967296 and turn the filter around.
+     */
+    @Test
+    public void testNumberLiteralAboveIntRangeKeepsItsValue() throws Exception {
+        String longLiteral = MetricDefinitionEnricher.buildNumberLiteral(3_000_000_000L, long.class);
+        String doubleLiteral = MetricDefinitionEnricher.buildNumberLiteral(3_000_000_000L, double.class);
+        assertEquals("3000000000L", longLiteral);
+        assertEquals("3000000000.0", doubleLiteral);
+
+        String matcher = GreaterEqualMatch.class.getName();
+        ClassPool pool = new ClassPool(true);
+        CtClass probe = pool.makeClass(MetricDefinitionEnricherTest.class.getPackage().getName() + ".NumberLiteralProbe");
+        probe.addMethod(CtNewMethod.make("public static boolean longAtLeast(long value) { return new " + matcher
+            + "().match(value, " + longLiteral + "); }", probe));
+        probe.addMethod(CtNewMethod.make("public static boolean doubleAtLeast(double value) { return new " + matcher
+            + "().match(value, " + doubleLiteral + "); }", probe));
+        Class<?> probeClass = probe.toClass(MetricDefinitionEnricherTest.class);
+
+        Method longAtLeast = probeClass.getMethod("longAtLeast", long.class);
+        assertFalse((Boolean) longAtLeast.invoke(null, 1L));
+        assertTrue((Boolean) longAtLeast.invoke(null, 3_000_000_000L));
+        Method doubleAtLeast = probeClass.getMethod("doubleAtLeast", double.class);
+        assertFalse((Boolean) doubleAtLeast.invoke(null, 1.0));
+        assertTrue((Boolean) doubleAtLeast.invoke(null, 3.0E9));
     }
 
     /**

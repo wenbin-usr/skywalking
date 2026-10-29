@@ -1,0 +1,142 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.skywalking.oap.trace.analyzer.v2.provider.span;
+
+import com.google.common.hash.Hashing;
+import lombok.Getter;
+import org.apache.skywalking.oap.server.core.remote.data.StreamData;
+import org.apache.skywalking.oap.server.core.remote.grpc.proto.RemoteData;
+import org.apache.skywalking.oap.server.core.trace.SpanMetadata;
+
+/**
+ * One half of a call, as {@link SpanPairing} needs it. The caller half is the calling span's service and the peer it
+ * dialed, under its own span id, from a CLIENT span or a SERVER span that passed its own context on; the callee half
+ * is a SERVER span's service, under its parent span id, with the key of the rule whose {@code buildNetworkAlias}
+ * composes the alias address from the caller half. Routed to the node that owns the trace by
+ * {@link #remoteHashCode()}, so both halves of every call meet on one node.
+ */
+@Getter
+public class PairingFact extends StreamData {
+    private String traceId = "";
+    private String spanId = "";
+    private String parentSpanId = "";
+    private String service = "";
+    /**
+     * The caller half's peer, as its rule's {@code prepareNetworkAlias} named it.
+     */
+    private String peer = "";
+    /**
+     * The callee half's rule, by the layer it is declared for and its name.
+     */
+    private String ruleLayer = "";
+    private String ruleName = "";
+    private boolean server;
+    private boolean normal;
+    private long timestampMillis;
+
+    public PairingFact() {
+    }
+
+    /**
+     * @param meta      a SERVER span with a parent in another process
+     * @param normal    the {@code normal} flag its service id carries
+     * @param ruleLayer the layer of the rule whose {@code buildNetworkAlias} the span ran
+     * @param ruleName  that rule's name
+     * @return the callee half of the call
+     */
+    public static PairingFact server(final SpanMetadata meta, final boolean normal,
+                                     final String ruleLayer, final String ruleName) {
+        final PairingFact fact = new PairingFact();
+        fact.traceId = meta.getTraceId();
+        fact.spanId = meta.getSpanId();
+        fact.parentSpanId = meta.getParentSpanId();
+        fact.service = meta.getService();
+        fact.ruleLayer = ruleLayer;
+        fact.ruleName = ruleName;
+        fact.server = true;
+        fact.normal = normal;
+        fact.timestampMillis = meta.getTimestamp();
+        return fact;
+    }
+
+    /**
+     * @param meta the calling span: a CLIENT span, or a SERVER span that passed its own context to the peer
+     * @param peer the peer its rule prepared
+     * @return the caller half of the call
+     */
+    public static PairingFact client(final SpanMetadata meta, final String peer) {
+        final PairingFact fact = new PairingFact();
+        fact.traceId = meta.getTraceId();
+        fact.spanId = meta.getSpanId();
+        fact.parentSpanId = meta.getParentSpanId() == null ? "" : meta.getParentSpanId();
+        fact.service = meta.getService();
+        fact.peer = peer;
+        fact.timestampMillis = meta.getTimestamp();
+        return fact;
+    }
+
+    /**
+     * Every fact of one trace hashes alike, which is what puts both halves of a call on one node.
+     */
+    @Override
+    public int remoteHashCode() {
+        return traceId.hashCode();
+    }
+
+    /**
+     * A bucket from 0 to 99 for sampling, from a different hash of the trace id than {@link #remoteHashCode()}:
+     * with one hash, the residues that pass the sample and the residue that picks the owner move together, and a
+     * cluster whose size shares a factor with 100 would hand every sampled trace to a subset of its nodes; at 50
+     * nodes and 25 percent, to the first 25. Both halves of a call still sample alike, since they share the id.
+     *
+     * @return the bucket this fact's trace falls in
+     */
+    public int sampleBucket() {
+        return Math.abs(Hashing.murmur3_32_fixed().hashUnencodedChars(traceId).asInt() % 100);
+    }
+
+    @Override
+    public RemoteData.Builder serialize() {
+        final RemoteData.Builder builder = RemoteData.newBuilder();
+        builder.addDataStrings(traceId);
+        builder.addDataStrings(spanId);
+        builder.addDataStrings(parentSpanId);
+        builder.addDataStrings(service);
+        builder.addDataStrings(peer);
+        builder.addDataStrings(ruleLayer);
+        builder.addDataStrings(ruleName);
+        builder.addDataIntegers(server ? 1 : 0);
+        builder.addDataIntegers(normal ? 1 : 0);
+        builder.addDataLongs(timestampMillis);
+        return builder;
+    }
+
+    @Override
+    public void deserialize(final RemoteData remoteData) {
+        traceId = remoteData.getDataStrings(0);
+        spanId = remoteData.getDataStrings(1);
+        parentSpanId = remoteData.getDataStrings(2);
+        service = remoteData.getDataStrings(3);
+        peer = remoteData.getDataStrings(4);
+        ruleLayer = remoteData.getDataStrings(5);
+        ruleName = remoteData.getDataStrings(6);
+        server = remoteData.getDataIntegers(0) == 1;
+        normal = remoteData.getDataIntegers(1) == 1;
+        timestampMillis = remoteData.getDataLongs(0);
+    }
+}

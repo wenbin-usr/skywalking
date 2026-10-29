@@ -5,14 +5,13 @@ If the new configuration is not well-formed, the OAP may fail to start up. The f
 
 Supported handlers:
 
-* `otlp`: [OpenTelemetry](https://github.com/open-telemetry/opentelemetry-collector/tree/1c217b366fbdb209044d8f4c3fece079ae23bd3b/exporter/otlpexporter) gRPC service handler.
+* `otlp-metrics`: [OpenTelemetry](https://github.com/open-telemetry/opentelemetry-collector/tree/1c217b366fbdb209044d8f4c3fece079ae23bd3b/exporter/otlpexporter) metrics service handler, over gRPC and HTTP.
 
 **Notice:**  Set `SW_OTEL_RECEIVER=default` through system environment or change `receiver-otel/selector=${SW_OTEL_RECEIVER:default}` to activate the OpenTelemetry receiver.
 
 The rule file should be in YAML format, defined by the scheme described in [MAL](../../concepts-and-designs/mal.md).
-Note: `receiver-otel` only supports the `group`, `defaultMetricLevel`, and `metricsRules` nodes of the scheme due to its push mode.
 
-To activate the `otlp` handler and relevant rules of `istio`:
+To activate the `otlp-metrics` handler and relevant rules of `istio`:
 
 ```yaml
 receiver-otel:
@@ -23,8 +22,8 @@ receiver-otel:
 ```
 
 The receiver adds label with key `node_identifier_host_name` to the collected data samples,
-and its value is from `net.host.name` (or `host.name` for some OTLP versions) resource attributes defined in OpenTelemetry proto,
-for identification of the metric data.
+and its value is from the `net.host.name` or `host.name` resource attribute, or, when neither is present,
+`server.address`, for identification of the metric data.
 
 **Label name conversion:** Dots (`.`) in attribute key names are converted to underscores (`_`) for both
 resource attributes and data point (metric-level) attributes. For example, `gen_ai.token.type` becomes
@@ -40,12 +39,18 @@ in the resource attributes, the fallback is skipped.
 | `service.name` | `job_name` | The [OTel Collector Prometheus Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/prometheusreceiver/README.md) automatically converts the Prometheus `job` label to `service.name`. This fallback ensures it is available as `job_name` for MAL rule filtering. |
 | `net.host.name` | `node_identifier_host_name` | Legacy: used by VM/Windows MAL rules |
 | `host.name` | `node_identifier_host_name` | Legacy: used by VM/Windows MAL rules |
+| `server.address` | `node_identifier_host_name` | Only when neither `net.host.name` nor `host.name` is present. The OTel Collector Prometheus Receiver sends a scraped target's host only as `server.address` from Collector `0.127.0`. |
 
-When `job_name` is set explicitly in `OTEL_RESOURCE_ATTRIBUTES` (e.g., by Envoy AI Gateway),
+When `job_name` is set explicitly in `OTEL_RESOURCE_ATTRIBUTES` (e.g., `job_name=envoy-ai-gateway` for [Agent Router](backend-envoy-ai-gateway-monitoring.md)),
 it takes precedence and the `service.name` fallback is skipped.
 
-**Note:** The `net.host.name` and `host.name` mappings are legacy. New integrations should use
+**Note:** The `net.host.name`, `host.name` and `server.address` mappings are legacy. New integrations should use
 the natural dot-to-underscore conversion (e.g., `host.name` → `host_name` in MAL rules).
+
+**Points of one request are analysed a minute at a time**, oldest minute first. A MAL rule folds every sample of
+an entity into one value at the first sample's time, which is right for a scrape, whose samples share one time, and
+would be wrong for a request that carries a series of minutes, as a delta exporter that batches or a sender replaying
+history does: such a request lands as one value per minute, each minute with every point of its own.
 
 | Description                             | Configuration File                                  | Data Source                                                                                                            |
 |-----------------------------------------|-----------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
@@ -86,3 +91,6 @@ the natural dot-to-underscore conversion (e.g., `host.name` → `host_name` in M
 | Metrics of BanyanDB                     | otel-rules/banyandb/banyandb-service.yaml           | BanyanDB(embedded prometheus endpoint) -> OpenTelemetry Collector – OTLP exporter –> SkyWalking OAP Server             |
 | Metrics of BanyanDB                     | otel-rules/banyandb/banyandb-instance.yaml          | BanyanDB(embedded prometheus endpoint) -> OpenTelemetry Collector – OTLP exporter –> SkyWalking OAP Server             |
 | Metrics of BanyanDB                     | otel-rules/banyandb/banyandb-endpoint.yaml          | BanyanDB(embedded prometheus endpoint) -> OpenTelemetry Collector – OTLP exporter –> SkyWalking OAP Server             |
+| Metrics of AI agent runtimes            | otel-rules/ai-agent/runtime-service.yaml            | the AI Sessionizer for the token metrics, and Claude Code's OpenTelemetry exporter sent directly for the others -- OTLP --> SkyWalking OAP Server; see [the metric catalog](ai-agent-conversation.md#metric-catalog) |
+| Metrics of AI agent runtimes            | otel-rules/ai-agent/runtime-instance.yaml           | the AI Sessionizer for the token metrics, and Claude Code's OpenTelemetry exporter sent directly for the others -- OTLP --> SkyWalking OAP Server; see [the metric catalog](ai-agent-conversation.md#metric-catalog) |
+| Metrics of AI agent MCP calls           | otel-rules/ai-agent/mcp_endpoint.yaml               | the AI Sessionizer, from the MCP calls its Claude Code plugin records -- OTLP --> SkyWalking OAP Server |

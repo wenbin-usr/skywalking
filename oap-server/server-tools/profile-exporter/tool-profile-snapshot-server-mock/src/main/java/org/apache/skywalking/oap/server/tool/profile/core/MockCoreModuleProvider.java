@@ -52,6 +52,7 @@ import org.apache.skywalking.oap.server.core.query.AggregationQueryService;
 import org.apache.skywalking.oap.server.core.query.AlarmQueryService;
 import org.apache.skywalking.oap.server.core.query.BrowserLogQueryService;
 import org.apache.skywalking.oap.server.core.query.EventQueryService;
+import org.apache.skywalking.oap.server.core.query.GenAIEvaluationRecordQueryService;
 import org.apache.skywalking.oap.server.core.query.HierarchyQueryService;
 import org.apache.skywalking.oap.server.core.query.LogQueryService;
 import org.apache.skywalking.oap.server.core.query.MetadataQueryService;
@@ -200,6 +201,8 @@ public class MockCoreModuleProvider extends CoreModuleProvider {
         this.registerServiceImplementation(RecordQueryService.class, new RecordQueryService(getManager()));
         this.registerServiceImplementation(HierarchyQueryService.class, new HierarchyQueryService(getManager(), moduleConfig));
         this.registerServiceImplementation(
+                GenAIEvaluationRecordQueryService.class, new GenAIEvaluationRecordQueryService(getManager()));
+        this.registerServiceImplementation(
             TTLStatusQuery.class, new TTLStatusQuery(
                 getManager(),
                 moduleConfig.getMetricsDataTTL(),
@@ -245,6 +248,10 @@ public class MockCoreModuleProvider extends CoreModuleProvider {
 
     @Override
     public void notifyAfterCompleted() {
+    }
+
+    @Override
+    public void notifyBootCompleted() {
     }
 
     @Override

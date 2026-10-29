@@ -45,7 +45,7 @@ metricsRules:
   - name: unacknowledged_messages
     exp: rabbitmq_queue_messages_unacked.sum(['cluster', 'node'])
   - name: outgoing_messages_total
-    exp: rabbitmq_global_messages_redelivered_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_consume_auto_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_consume_manual_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_get_auto_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_get_auto_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_get_manual_ack_total.sum(['cluster', 'node']).rate('PT1M')
+    exp: rabbitmq_global_messages_redelivered_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_consume_auto_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_consume_manual_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_get_auto_ack_total.sum(['cluster', 'node']).rate('PT1M') + rabbitmq_global_messages_delivered_get_manual_ack_total.sum(['cluster', 'node']).rate('PT1M')
   - name: consumer_total
     exp: rabbitmq_consumers.sum(['cluster', 'node'])
   - name: channel_total
@@ -75,6 +75,6 @@ metricsRules:
   - name: allocated_multiblock_pool_unused
     exp: erlang_vm_allocators.tagEqual('usage' , 'carriers_size' , 'kind', 'mbcs_pool').sum(['cluster', 'node', 'alloc'])
   - name: allocated_singleblock_used
-    exp: erlang_vm_allocators.tagEqual('usage' , 'blocks_size' , 'kind', 'mbcs').sum(['cluster', 'node', 'alloc'])
+    exp: erlang_vm_allocators.tagEqual('usage' , 'blocks_size' , 'kind', 'sbcs').sum(['cluster', 'node', 'alloc'])
   - name: allocated_singleblock_unused
-    exp: erlang_vm_allocators.tagEqual('usage' , 'carriers_size' , 'kind', 'mbcs').sum(['cluster', 'node', 'alloc'])
+    exp: erlang_vm_allocators.tagEqual('usage' , 'carriers_size' , 'kind', 'sbcs').sum(['cluster', 'node', 'alloc']) - erlang_vm_allocators.tagEqual('usage' , 'blocks_size' , 'kind', 'sbcs').sum(['cluster', 'node', 'alloc'])

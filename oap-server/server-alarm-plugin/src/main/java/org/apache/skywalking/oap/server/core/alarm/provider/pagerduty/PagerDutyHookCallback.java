@@ -21,13 +21,14 @@ package org.apache.skywalking.oap.server.core.alarm.provider.pagerduty;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
 import org.apache.skywalking.oap.server.core.alarm.HttpAlarmCallback;
 import org.apache.skywalking.oap.server.core.alarm.provider.AlarmRulesWatcher;
 
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -36,12 +37,16 @@ import org.apache.skywalking.oap.server.library.util.CollectionUtils;
 import org.apache.skywalking.oap.server.library.util.StringUtil;
 
 @Slf4j
-@RequiredArgsConstructor
 public class PagerDutyHookCallback extends HttpAlarmCallback {
-    private static final String PAGER_DUTY_EVENTS_API_V2_URL = "http://events.pagerduty.com/v2/enqueue";
     private static final Gson GSON = new Gson();
 
     private final AlarmRulesWatcher alarmRulesWatcher;
+
+    public PagerDutyHookCallback(final AlarmRulesWatcher alarmRulesWatcher, final HttpClient httpClient,
+                                 final Duration httpTimeout) {
+        super(httpClient, httpTimeout);
+        this.alarmRulesWatcher = alarmRulesWatcher;
+    }
 
     @Override
     protected void doAlarmCallback(List<AlarmMessage> alarmMessages, boolean isRecovery) throws Exception {
@@ -67,7 +72,7 @@ public class PagerDutyHookCallback extends HttpAlarmCallback {
                 for (final var alarmMessage : messages) {
                     try {
                         post(
-                            URI.create(PAGER_DUTY_EVENTS_API_V2_URL),
+                            URI.create(setting.getEventsApiUrl()),
                             getMessageBody(alarmMessage, integrationKey, template), Map.of()
                         );
                     } catch (Exception e) {

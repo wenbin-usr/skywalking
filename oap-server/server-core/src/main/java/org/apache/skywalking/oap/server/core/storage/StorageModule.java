@@ -40,6 +40,8 @@ import org.apache.skywalking.oap.server.core.storage.profiling.ebpf.IEBPFProfili
 import org.apache.skywalking.oap.server.core.storage.profiling.ebpf.IEBPFProfilingScheduleDAO;
 import org.apache.skywalking.oap.server.core.storage.profiling.ebpf.IEBPFProfilingTaskDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IEventQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IAIAgentConversationQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IGenAIEvaluationRecordQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IHierarchyQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ILogQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IMetadataQueryDAO;
@@ -49,6 +51,7 @@ import org.apache.skywalking.oap.server.core.storage.query.ITagAutoCompleteQuery
 import org.apache.skywalking.oap.server.core.storage.query.IRecordsQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ITopologyQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.ITraceQueryDAO;
+import org.apache.skywalking.oap.server.core.storage.query.IOTLPTraceQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.query.IZipkinQueryDAO;
 import org.apache.skywalking.oap.server.core.storage.ttl.StorageTTLStatusQuery;
 import org.apache.skywalking.oap.server.library.module.ModuleDefine;
@@ -81,6 +84,8 @@ public class StorageModule extends ModuleDefine {
             IAlarmQueryDAO.class,
             IRecordsQueryDAO.class,
             ILogQueryDAO.class,
+            IGenAIEvaluationRecordQueryDAO.class,
+            IAIAgentConversationQueryDAO.class,
             IProfileTaskQueryDAO.class,
             IProfileTaskLogQueryDAO.class,
             IProfileThreadSnapshotQueryDAO.class,
@@ -94,6 +99,7 @@ public class StorageModule extends ModuleDefine {
             IServiceLabelDAO.class,
             ITagAutoCompleteQueryDAO.class,
             IZipkinQueryDAO.class,
+            IOTLPTraceQueryDAO.class,
             ISpanAttachedEventQueryDAO.class,
             IHierarchyQueryDAO.class,
             IAsyncProfilerTaskQueryDAO.class,

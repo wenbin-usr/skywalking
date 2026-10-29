@@ -840,6 +840,15 @@ public enum MetadataRegistry {
                             DownSampling.None,
                             config.getZipkinTrace()
                         );
+                    case OTLP_TRACE:
+                        return new SchemaMetadata(
+                            namespace,
+                            BanyanDB.TraceGroup.OTLP_TRACE.getName(),
+                            model.getName(),
+                            Kind.TRACE,
+                            DownSampling.None,
+                            config.getOtlpTrace()
+                        );
                     default:
                         throw new IllegalStateException("unknown trace group " + traceGroup);
                 }
@@ -864,6 +873,15 @@ public enum MetadataRegistry {
                             Kind.STREAM,
                             model.getDownsampling(),
                             config.getRecordsBrowserErrorLog()
+                        );
+                    case RECORDS_AI_AGENT:
+                        return new SchemaMetadata(
+                            namespace,
+                            BanyanDB.StreamGroup.RECORDS_AI_AGENT.getName(),
+                            model.getName(),
+                            Kind.STREAM,
+                            model.getDownsampling(),
+                            config.getRecordsAIAgent()
                         );
                     case RECORDS:
                         return new SchemaMetadata(

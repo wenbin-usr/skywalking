@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.function.Function;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.oap.server.core.zipkin.source.ZipkinSpan;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
@@ -65,7 +66,7 @@ public class SpanListenerManager implements Service {
      * when all modules are fully started.
      *
      * <p>Listeners whose {@link SpanListener#requiredModules()} are not all loaded
-     * are skipped with an info log.
+     * are skipped and logged at debug level.
      */
     private void ensureInitialized() {
         if (initialized) {
@@ -81,7 +82,7 @@ public class SpanListenerManager implements Service {
                 boolean satisfied = true;
                 for (final String moduleName : required) {
                     if (!moduleManager.has(moduleName)) {
-                        log.info("SpanListener {} skipped: required module {} is not loaded",
+                        log.debug("SpanListener {} skipped: required module {} is not loaded",
                             listener.getClass().getName(), moduleName);
                         satisfied = false;
                         break;
@@ -105,9 +106,32 @@ public class SpanListenerManager implements Service {
      * @return merged result. If any listener vetoes persistence, {@code shouldPersist} is false.
      */
     public SpanListenerResult notifyOTLPPhase(final OTLPSpanReader span,
+                                              final String serviceName,
                                               final Map<String, String> resourceAttributes,
                                               final String scopeName,
                                               final String scopeVersion) {
+        return merge(listener -> listener.onOTLPSpan(span, serviceName, resourceAttributes, scopeName, scopeVersion));
+    }
+
+    /**
+     * Phase 2 for natively stored OTLP spans, see {@link SpanListener#onNativeOTLPSpan}. Merged the way
+     * {@link #notifyOTLPPhase} merges: any veto drops the span, tags merge last-writer-wins.
+     */
+    public SpanListenerResult notifyNativeOTLPPhase(final OTLPSpanReader span,
+                                                    final String serviceName,
+                                                    final Map<String, String> resourceAttributes,
+                                                    final String scopeName,
+                                                    final String scopeVersion) {
+        return merge(listener -> listener.onNativeOTLPSpan(
+            span, serviceName, resourceAttributes, scopeName, scopeVersion));
+    }
+
+    /**
+     * Runs one listener callback over every listener and merges the results: any veto drops the span, additional
+     * tags merge last-writer-wins. Each listener should use distinct tag keys; a collision is a design issue in the
+     * listener implementations.
+     */
+    private SpanListenerResult merge(final Function<SpanListener, SpanListenerResult> phase) {
         ensureInitialized();
         if (listeners.isEmpty()) {
             return SpanListenerResult.CONTINUE;
@@ -116,17 +140,13 @@ public class SpanListenerManager implements Service {
         Map<String, String> mergedTags = null;
 
         for (final SpanListener listener : listeners) {
-            final SpanListenerResult result = listener.onOTLPSpan(
-                span, resourceAttributes, scopeName, scopeVersion);
+            final SpanListenerResult result = phase.apply(listener);
             if (result == SpanListenerResult.CONTINUE) {
                 continue;
             }
             if (!result.isShouldPersist()) {
                 shouldPersist = false;
             }
-            // Merge additional tags — last-writer-wins if multiple listeners
-            // set the same key. Each listener should use distinct tag keys;
-            // collisions indicate a design issue in the listener implementations.
             if (!result.getAdditionalTags().isEmpty()) {
                 if (mergedTags == null) {
                     mergedTags = new HashMap<>();

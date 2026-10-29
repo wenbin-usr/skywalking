@@ -21,4 +21,11 @@
   normal: true
   layers:
     - OS_WINDOWS
+- id: {{ b64enc "172.25.0.1" }}.1
+  name: 172.25.0.1
+  group: ""
+  shortname: 172.25.0.1
+  normal: true
+  layers:
+    - OS_WINDOWS
   {{- end }}

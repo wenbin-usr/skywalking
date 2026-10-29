@@ -39,7 +39,7 @@ import org.apache.skywalking.oap.server.core.UnexpectedException;
  * <p>Layers are persisted by ordinal (int). The ordinal space is partitioned by tier so
  * each registration channel has a non-overlapping range:
  * <ul>
- *   <li>{@code 0 – 9_999} — built-in {@code Layer.*} constants. Currently {@code 0..50} in
+ *   <li>{@code 0 – 9_999} — built-in {@code Layer.*} constants. Currently {@code 0..56} in
  *       use; the rest of the range is reserved for future built-ins. Ordinals already
  *       persisted in storage are frozen forever and must never be reused.</li>
  *   <li>{@code 10_000 – 99_999} — boot-time external layers: {@code layer-extensions.yml},
@@ -284,8 +284,8 @@ public final class Layer {
     public static final Layer VIRTUAL_GENAI = register("VIRTUAL_GENAI", 45, false);
 
     /**
-     * Envoy AI Gateway is an AI/LLM traffic gateway built on Envoy Proxy,
-     * providing observability for GenAI API traffic.
+     * Agent Router, formerly Envoy AI Gateway, is an AI/LLM traffic gateway built on Envoy Proxy,
+     * providing observability for GenAI API traffic. The layer name predates the rename and is kept.
      */
     public static final Layer ENVOY_AI_GATEWAY = register("ENVOY_AI_GATEWAY", 46, true);
 
@@ -300,6 +300,41 @@ public final class Layer {
 
     /** Apache Airflow workflow orchestration (native OpenTelemetry metrics via OTel Collector). */
     public static final Layer AIRFLOW = register("AIRFLOW", 50, true);
+
+    /**
+     * Conversations of long-lived AI agents, landed by the AI Sessionizer as Session Data and Session Flow files
+     * over OTLP logs. The service is the agent runtime; the instance is the sender.
+     */
+    public static final Layer AI_AGENT = register("AI_AGENT", 51, true);
+
+    /**
+     * A service whose spans arrived over OTLP and were analyzed by TAL, the OTLP counterpart of GENERAL. Separate
+     * from GENERAL because the GENERAL dashboards read the core.oal metrics, which the span analysis does not
+     * produce. Conjectured peers of such a service get the OTLP_VIRTUAL_* layers below, as GENERAL's get VIRTUAL_*,
+     * so their lists and dashboards read the TAL metrics.
+     */
+    public static final Layer OTLP_GENERAL = register("OTLP_GENERAL", 52, true);
+
+    /**
+     * A database conjectured from the OTLP spans of its callers. Non-normal, like every conjectured layer: the
+     * normal flag is part of a service id, so a peer registered as normal would stop merging with the node the
+     * agent path conjectures for the same address.
+     */
+    public static final Layer OTLP_VIRTUAL_DATABASE = register("OTLP_VIRTUAL_DATABASE", 53, false);
+
+    /** A cache conjectured from the OTLP spans of its callers. */
+    public static final Layer OTLP_VIRTUAL_CACHE = register("OTLP_VIRTUAL_CACHE", 54, false);
+
+    /** A message broker conjectured from the OTLP spans of its producers and consumers. */
+    public static final Layer OTLP_VIRTUAL_MQ = register("OTLP_VIRTUAL_MQ", 55, false);
+
+    /**
+     * Service mesh sidecars, such as Envoy under Istio, whose spans arrive over OTLP. No shipped TAL rule is declared
+     * for it, so a sidecar that sets its resource's {@code service.layer} to it has its spans stored but not
+     * analyzed: the application's own spans carry the services, and the sidecar's would only add a node per
+     * workload named after the mesh's naming.
+     */
+    public static final Layer OTLP_MESH = register("OTLP_MESH", 56, true);
 
     private final String name;
     private final int value;
